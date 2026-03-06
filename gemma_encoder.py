@@ -1,19 +1,13 @@
-import json
 import logging
 from glob import glob
 from pathlib import Path
 from typing import List, Optional, Tuple
 
 import comfy.model_management
-import comfy.ops
 import comfy.sd
 import comfy.supported_models_base
 import folder_paths
-import safetensors
 import torch
-from comfy.ldm.lightricks.model import LTXFrequenciesPrecision, LTXRopeType
-from comfy.utils import load_torch_file
-from einops import rearrange
 from PIL import Image
 from transformers import (
     AutoImageProcessor,
@@ -25,12 +19,10 @@ from transformers import (
 from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
 from transformers.models.auto.modeling_auto import MODEL_MAPPING_NAMES
 
-from .embeddings_connector import Embeddings1DConnector
 from .nodes_registry import comfy_node
+from .text_embeddings_connectors import load_text_embeddings_pipeline
 
 logger = logging.getLogger(__name__)
-
-PREFIX_BASE = "model.diffusion_model."
 
 
 def _load_system_prompt(filename: str) -> str:
@@ -54,99 +46,6 @@ def tensor_to_pil(tensor: torch.Tensor) -> Image.Image:
         tensor = tensor[0]
     numpy_image = (tensor.cpu().numpy() * 255).astype("uint8")
     return Image.fromarray(numpy_image)
-
-
-def load_video_embeddings_connector(ltxv_path, dtype=torch.bfloat16):
-    sd, metadata = load_torch_file(str(ltxv_path), return_metadata=True)
-    config = json.loads(metadata.get("config", "{}"))
-    transformer_config = config.get("transformer", {})
-    rope_type = LTXRopeType.from_dict(transformer_config)
-    frequencies_precision = LTXFrequenciesPrecision.from_dict(transformer_config)
-    pe_max_pos = transformer_config.get("connector_positional_embedding_max_pos", [1])
-    sd_keys = list(sd.keys())
-
-    video_only_connector_prefix = f"{PREFIX_BASE}embeddings_connector."
-    av_connector_prefix = f"{PREFIX_BASE}video_embeddings_connector."
-    prefix = (
-        av_connector_prefix
-        if f"{PREFIX_BASE}audio_adaln_single.linear.weight" in sd_keys
-        else video_only_connector_prefix
-    )
-    return load_embeddings_connector(
-        sd, prefix, dtype, rope_type, frequencies_precision, pe_max_pos
-    )
-
-
-def load_audio_embeddings_connector(ltxv_path, dtype=torch.bfloat16):
-    sd, metadata = load_torch_file(str(ltxv_path), return_metadata=True)
-    config = json.loads(metadata.get("config", "{}"))
-    transformer_config = config.get("transformer", {})
-    rope_type = LTXRopeType.from_dict(transformer_config)
-    frequencies_precision = LTXFrequenciesPrecision.from_dict(transformer_config)
-    pe_max_pos = transformer_config.get("connector_positional_embedding_max_pos", [1])
-    return load_embeddings_connector(
-        sd,
-        f"{PREFIX_BASE}audio_embeddings_connector.",
-        dtype,
-        rope_type,
-        frequencies_precision,
-        pe_max_pos,
-    )
-
-
-def load_embeddings_connector(
-    sd,
-    connector_prefix,
-    dtype=torch.bfloat16,
-    rope_type=LTXRopeType.INTERLEAVED,
-    frequencies_precision=LTXFrequenciesPrecision.FLOAT32,
-    pe_max_pos=None,
-):
-    sd_connector = {
-        k[len(connector_prefix) :]: v
-        for k, v in sd.items()
-        if k.startswith(connector_prefix)
-    }
-
-    if len(sd_connector) == 0:
-        return None
-
-    operations = comfy.ops.pick_operations(dtype, dtype, disable_fast_fp8=True)
-    connector = Embeddings1DConnector(
-        dtype=dtype,
-        operations=operations,
-        positional_embedding_max_pos=pe_max_pos if pe_max_pos is not None else [1],
-        split_rope=rope_type == LTXRopeType.SPLIT,
-        double_precision_rope=frequencies_precision == LTXFrequenciesPrecision.FLOAT64,
-    )
-    connector.load_state_dict(sd_connector)
-    return connector
-
-
-def load_proj_matrix_from_ltxv(ltxv_path: Path, prefix=""):
-    with safetensors.safe_open(ltxv_path, framework="pt", device="cpu") as f:
-        keys = filter(lambda key: key.startswith(prefix), f.keys())
-        sd = {k.removeprefix(prefix): f.get_tensor(k) for k in keys if k in f.keys()}
-    if not sd:
-        return None
-    model = GemmaFeaturesExtractorProjLinear()
-    model.load_state_dict(sd)
-    return model
-
-
-def load_proj_matrix_from_checkpoint(checkpoint_path: Path):
-    """
-    Load model weights from a checkpoint file.
-    :param checkpoint_path: Path to the checkpoint file.
-    """
-    model = GemmaFeaturesExtractorProjLinear()
-    loaded_state_dict = load_torch_file(str(checkpoint_path), return_metadata=False)
-    if "aggregate_embed.weight" not in loaded_state_dict:
-        raise ValueError(
-            f"Checkpoint {checkpoint_path} does not contain 'aggregate_embed.weight'."
-        )
-    model.load_state_dict(loaded_state_dict)
-    return model
 
 
 class LTXVGemmaTokenizer:
@@ -184,22 +83,12 @@ class LTXVGemmaTokenizer:
         return out
 
 
-class GemmaFeaturesExtractorProjLinear(torch.nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.aggregate_embed = torch.nn.Linear(3840 * 49, 3840, bias=False)
-
-    def forward(self, x):
-        return self.aggregate_embed(x)
-
-
 class LTXVGemmaTextEncoderModel(torch.nn.Module):
     def __init__(
         self,
         model: Gemma3ForConditionalGeneration,
-        feature_extractor_linear: GemmaFeaturesExtractorProjLinear,
-        embeddings_connector: Embeddings1DConnector,
-        audio_embeddings_connector: Embeddings1DConnector | None = None,
+        feature_extractor,  # FeatureExtractorV1/V2
+        embeddings_processor,  # VideoEmbeddingsProcessor or AVEmbeddingsProcessor
         processor: Gemma3Processor | None = None,
         dtype=torch.bfloat16,
         device="cpu",
@@ -207,13 +96,8 @@ class LTXVGemmaTextEncoderModel(torch.nn.Module):
         super().__init__()
         self.model = model
         self.processor = processor
-        self.feature_extractor_linear = feature_extractor_linear.to(dtype=dtype)
-        self.embeddings_connector = embeddings_connector.to(dtype=dtype)
-        self.audio_embeddings_connector = (
-            audio_embeddings_connector.to(dtype=dtype)
-            if audio_embeddings_connector is not None
-            else None
-        )
+        self.feature_extractor = feature_extractor.to(dtype=dtype)
+        self.embeddings_processor = embeddings_processor.to(dtype=dtype)
         self.dtypes = set([dtype])
         # Cache an estimate of memory required to load/keep the model on device
         # weights size + small overhead
@@ -227,89 +111,20 @@ class LTXVGemmaTextEncoderModel(torch.nn.Module):
     def reset_clip_options(self):
         pass
 
-    @staticmethod
-    def norm_and_concat_padded_batch(
-        encoded_text: torch.Tensor,
-        sequence_lengths: torch.Tensor,
-        padding_side: str = "right",
-    ) -> torch.Tensor:
-        """
-        Normalize a 4D tensor [B, T, D, L] per sample and per layer, using sequence_lengths to mask.
-        Returns [B, T,  D * L] tensor with original padding preserved.
-
-        Args:
-            encoded_text: 4D tensor [B, T, D, L]
-            sequence_lengths: 1D tensor [B] with actual sequence lengths
-            padding_side: "left" or "right" to indicate which side has padding
-        """
-        B, T, D, L = encoded_text.shape
-        device = encoded_text.device
-
-        # Build mask: [B, T, 1, 1]
-        token_indices = torch.arange(T, device=device)[None, :]  # [1, T]
-
-        if padding_side == "right":
-            # For right padding, valid tokens are from 0 to sequence_length-1
-            mask = token_indices < sequence_lengths[:, None]  # [B, T]
-        elif padding_side == "left":
-            # For left padding, valid tokens are from (T - sequence_length) to T-1
-            start_indices = T - sequence_lengths[:, None]  # [B, 1]
-            mask = token_indices >= start_indices  # [B, T]
-        else:
-            raise ValueError(
-                f"padding_side must be 'left' or 'right', got {padding_side}"
-            )
-
-        mask = rearrange(mask, "b t -> b t 1 1")
-
-        # Compute masked mean: [B, 1, 1, L]
-        masked = encoded_text.masked_fill(~mask, 0.0)
-        # denom = mask.sum(dim=(1, 2), keepdim=True)  # [B, 1, 1, 1]
-        denom = (sequence_lengths * D).view(B, 1, 1, 1)
-        mean = masked.sum(dim=(1, 2), keepdim=True) / (denom + 1e-6)
-
-        # Compute masked min/max: [B, 1, 1, L]
-        x_min = encoded_text.masked_fill(~mask, float("inf")).amin(
-            dim=(1, 2), keepdim=True
-        )
-        x_max = encoded_text.masked_fill(~mask, float("-inf")).amax(
-            dim=(1, 2), keepdim=True
-        )
-        range_ = x_max - x_min
-
-        # Normalize only the valid tokens
-        normed = 8 * (encoded_text - mean) / (range_ + 1e-6)
-
-        # concat to be [Batch, T,  D * L] - this preserves the original structure
-        normed = normed.reshape(B, T, -1)  # [B, T, D * L]
-
-        # Apply mask to preserve original padding (set padded positions to 0)
-        mask_flattened = rearrange(mask, "b t 1 1 -> b t 1").expand(-1, -1, D * L)
-        normed = normed.masked_fill(~mask_flattened, 0.0)
-
-        return normed
-
     def forward(self, input_ids, attention_mask, padding_side="right"):
+        # Block 1: Run Gemma model
         outputs = self.model(
             input_ids=input_ids,
             attention_mask=attention_mask,
             output_hidden_states=True,
         )
-        encoded_text_features = torch.stack(outputs.hidden_states, dim=-1)
-        encoded_text_features_dtype = encoded_text_features.dtype
+        all_layer_hiddens = torch.stack(outputs.hidden_states, dim=-1)  # [B, T, D, L]
 
-        sequence_lengths = attention_mask.sum(dim=-1)
-        normed_concated_encoded_text_features = (
-            LTXVGemmaTextEncoderModel.norm_and_concat_padded_batch(
-                encoded_text_features, sequence_lengths, padding_side=padding_side
-            )
+        # Block 2: Feature extraction
+        features = self.feature_extractor(
+            all_layer_hiddens, attention_mask, padding_side
         )
-
-        projected = self.feature_extractor_linear(
-            normed_concated_encoded_text_features.to(encoded_text_features_dtype)
-        )
-
-        return projected
+        return features  # dict with "video" and optionally "audio"
 
     def encode_token_weights(self, token_weight_pairs):
         token_pairs = token_weight_pairs["gemma"]
@@ -322,31 +137,20 @@ class LTXVGemmaTextEncoderModel(torch.nn.Module):
 
         self.to(self.model.device)
 
-        encoded_input = self(input_ids, attention_mask, padding_side="left")
-        # convert attention mask to format embeddings connector expects.
-        connector_attention_mask = (attention_mask - 1).to(encoded_input.dtype).reshape(
+        features = self(input_ids, attention_mask, padding_side="left")
+
+        # Convert binary mask -> additive mask for processor
+        encoded_input_dtype = next(iter(features.values())).dtype
+        connector_attention_mask = (attention_mask - 1).to(encoded_input_dtype).reshape(
             (attention_mask.shape[0], 1, -1, attention_mask.shape[-1])
-        ) * torch.finfo(encoded_input.dtype).max
-        encoded, encoded_connector_attention_mask = self.embeddings_connector(
-            encoded_input,
-            connector_attention_mask,
+        ) * torch.finfo(encoded_input_dtype).max
+
+        # Block 3: Embeddings processor
+        encoded, mask = self.embeddings_processor.create_embeddings(
+            features, connector_attention_mask
         )
 
-        # restore the mask values to int64
-        attention_mask = (encoded_connector_attention_mask < 0.000001).to(torch.int64)
-
-        attention_mask = attention_mask.reshape([encoded.shape[0], encoded.shape[1], 1])
-        encoded = encoded * attention_mask
-
-        if self.audio_embeddings_connector is not None:
-            encoded_for_audio, _ = self.audio_embeddings_connector(
-                encoded_input, connector_attention_mask
-            )
-            encoded = torch.concat(
-                [encoded, encoded_for_audio], dim=len(encoded.shape) - 1
-            )
-
-        return encoded, None, {"attention_mask": attention_mask.squeeze(-1)}
+        return encoded, None, {"attention_mask": mask}
 
     def load_sd(self, sd):
         return self.model.load_state_dict(sd, strict=False)
@@ -368,28 +172,23 @@ def ltxv_gemma_clip(encoder_path, ltxv_path, processor=None, dtype=None):
     class _LTXVGemmaTextEncoderModel(LTXVGemmaTextEncoderModel):
         def __init__(self, device="cpu", dtype=dtype, model_options={}):
             dtype = torch.bfloat16  # TODO: make this configurable
+
             gemma_model = Gemma3ForConditionalGeneration.from_pretrained(
                 encoder_path,
                 local_files_only=True,
                 torch_dtype=dtype,
             )
 
-            feature_extractor_linear = load_proj_matrix_from_ltxv(
+            feature_extractor, embeddings_processor = load_text_embeddings_pipeline(
                 ltxv_path,
-                "text_embedding_projection.",
+                dtype=dtype,
+                fallback_proj_path=encoder_path / "proj_linear.safetensors",
             )
-            if feature_extractor_linear is None:
-                feature_extractor_linear = load_proj_matrix_from_checkpoint(
-                    encoder_path / "proj_linear.safetensors"
-                )
 
-            embeddings_connector = load_video_embeddings_connector(ltxv_path)
-            audio_embeddings_connector = load_audio_embeddings_connector(ltxv_path)
             super().__init__(
                 model=gemma_model,
-                feature_extractor_linear=feature_extractor_linear,
-                embeddings_connector=embeddings_connector,
-                audio_embeddings_connector=audio_embeddings_connector,
+                feature_extractor=feature_extractor,
+                embeddings_processor=embeddings_processor,
                 processor=processor,
                 dtype=dtype,
                 device=device,

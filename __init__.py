@@ -11,9 +11,13 @@ from .easy_samplers import (
 )
 from .gemma_api_conditioning import GemmaAPITextEncode
 from .gemma_encoder import LTXVGemmaCLIPModelLoader, LTXVGemmaEnhancePrompt
-from .guide import LTXVAddGuideAdvanced
+from .guide import LTXVAddGuideAdvanced, LTXVAddGuideAdvancedAttention
 from .guiders import GuiderParametersNode, MultimodalGuiderNode
-from .iclora import LTXAddVideoICLoRAGuide, LTXICLoRALoaderModelOnly
+from .iclora import (
+    LTXAddVideoICLoRAGuide,
+    LTXAddVideoICLoRAGuideAdvanced,
+    LTXICLoRALoaderModelOnly,
+)
 from .latent_norm import (
     LTXVAdainLatent,
     LTXVPerStepAdainPatcher,
@@ -40,6 +44,7 @@ from .nodes_registry import (
 from .nodes_registry import NODES_DISPLAY_NAME_PREFIX, camel_case_to_spaces
 from .prompt_enhancer_nodes import LTXVPromptEnhancer, LTXVPromptEnhancerLoader
 from .q8_nodes import LTXVQ8LoraModelLoader, LTXVQ8Patch
+from .sparse_tracks import LTXVDrawTracks, LTXVSparseTrackEditor
 from .stg import (
     LTXVApplySTG,
     STGAdvancedPresetsNode,
@@ -52,12 +57,14 @@ from .tricks import NODE_CLASS_MAPPINGS as TRICKS_NODE_CLASS_MAPPINGS
 from .tricks import NODE_DISPLAY_NAME_MAPPINGS as TRICKS_NODE_DISPLAY_NAME_MAPPINGS
 from .utiltily_nodes import ImageToCPU
 from .vae_patcher import LTXVPatcherVAE
+from .vanish_nodes import LTXVDilateVideoMask, LTXVInpaintPreprocess
 
 # Static node mappings, required for ComfyUI-Manager mapping to work
 NODE_CLASS_MAPPINGS = {
     "Set VAE Decoder Noise": DecoderNoise,
     "LTXVLinearOverlapLatentTransition": LinearOverlapLatentTransition,
     "LTXVAddGuideAdvanced": LTXVAddGuideAdvanced,
+    "LTXVAddGuideAdvancedAttention": LTXVAddGuideAdvancedAttention,
     "LTXVAddLatentGuide": LTXVAddLatentGuide,
     "LTXVAdainLatent": LTXVAdainLatent,
     "LTXVImgToVideoConditionOnly": LTXVImgToVideoConditionOnly,
@@ -95,9 +102,14 @@ NODE_CLASS_MAPPINGS = {
     "LowVRAMAudioVAELoader": LowVRAMAudioVAELoader,
     "LowVRAMLatentUpscaleModelLoader": LowVRAMLatentUpscaleModelLoader,
     "LTXAddVideoICLoRAGuide": LTXAddVideoICLoRAGuide,
+    "LTXAddVideoICLoRAGuideAdvanced": LTXAddVideoICLoRAGuideAdvanced,
     "LTXICLoRALoaderModelOnly": LTXICLoRALoaderModelOnly,
     "LTXVLoadConditioning": LTXVLoadConditioning,
     "LTXVSaveConditioning": LTXVSaveConditioning,
+    "LTXVDrawTracks": LTXVDrawTracks,
+    "LTXVSparseTrackEditor": LTXVSparseTrackEditor,
+    "LTXVDilateVideoMask": LTXVDilateVideoMask,
+    "LTXVInpaintPreprocess": LTXVInpaintPreprocess,
 }
 
 # Consistent display names between static and dynamic node mappings in nodes_registry.py,
@@ -115,8 +127,11 @@ NODE_DISPLAY_NAME_MAPPINGS.update(TRICKS_NODE_DISPLAY_NAME_MAPPINGS)
 NODE_CLASS_MAPPINGS.update(RUNTIME_NODE_CLASS_MAPPINGS)
 NODE_DISPLAY_NAME_MAPPINGS.update(RUNTIME_NODE_DISPLAY_NAME_MAPPINGS)
 
+WEB_DIRECTORY = "./web"
+
 # Export so that ComfyUI can pick them up.
 __all__ = [
     "NODE_CLASS_MAPPINGS",
     "NODE_DISPLAY_NAME_MAPPINGS",
+    "WEB_DIRECTORY",
 ]

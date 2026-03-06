@@ -78,6 +78,13 @@ class GemmaAPITextEncode:
                         "tooltip": "Text prompt to encode",
                     },
                 ),
+                "enhance_prompt": (
+                    "BOOLEAN",
+                    {
+                        "default": True,
+                        "tooltip": "When enabled, the prompt is enhanced using Gemma 3 before encoding",
+                    },
+                ),
                 "ckpt_name": (
                     folder_paths.get_filename_list("checkpoints"),
                     {"tooltip": "The name of the checkpoint (model) to load."},
@@ -90,7 +97,9 @@ class GemmaAPITextEncode:
     FUNCTION = "encode"
     CATEGORY = "api node/text/Lightricks"
 
-    def encode(self, api_key: str, prompt: str, ckpt_name: str):
+    def encode(
+        self, api_key: str, prompt: str, ckpt_name: str, enhance_prompt: bool = False
+    ):
         if not api_key:
             raise ValueError("API key is required")
 
@@ -101,7 +110,11 @@ class GemmaAPITextEncode:
             raise ValueError("Model path is required")
 
         model_id = extract_model_id(ckpt_name)
-        payload = {"prompt": prompt, "model_id": model_id}
+        payload = {
+            "prompt": prompt,
+            "model_id": model_id,
+            "enhance_prompt": enhance_prompt,
+        }
         logger.info(
             f"Calling API to encode prompt: {prompt[:50]}... with model_id: {model_id[:50]}..."
         )

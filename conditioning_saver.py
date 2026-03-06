@@ -65,5 +65,5 @@ class LTXVSaveConditioning(io.ComfyNode):
 
         file_size_mb = output_path.stat().st_size / (1024 * 1024)
         return io.NodeOutput(
-            ui=ui.Text(f"Saved: {output_path.name} ({file_size_mb:.2f} MB)")
+            ui=ui.PreviewText(f"Saved: {output_path.name} ({file_size_mb:.2f} MB)")
         )

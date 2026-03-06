@@ -1,3 +1,6 @@
+import importlib.metadata
+import logging
+
 import comfy
 import comfy.model_detection
 import comfy.model_management
@@ -9,6 +12,7 @@ import torch
 try:
     from q8_kernels.functional.ops import hadamard_transform
     from q8_kernels.integration.patch_transformer import (
+        patch_comfyui_native_avtransformer,
         patch_comfyui_native_transformer,
     )
 
@@ -29,6 +33,13 @@ def check_q8_available():
             "Q8 kernels are not available. To use this feature install the q8_kernels package from here:."
             "https://github.com/Lightricks/LTX-Video-Q8-Kernels"
         )
+
+
+def check_deprecated():
+    q8_version = tuple(
+        int(x) for x in importlib.metadata.version("q8_kernels").split(".")[:3]
+    )
+    return q8_version >= (0, 1, 5)
 
 
 @comfy_node(name="LTXQ8Patch")
@@ -84,30 +95,46 @@ class LTXVQ8Patch:
         m = model.clone()
         transformer_key = "diffusion_model"
         transformer = m.get_model_object(transformer_key)
-        quantize_self_attn, quantize_cross_attn, quantize_ffn = LTXVQ8Patch.PRESETS.get(
-            quantization_preset, (quantize_self_attn, quantize_cross_attn, quantize_ffn)
-        )
-        if getattr(transformer, "quantization_config", None) is not None:
-            if (quantize_self_attn, quantize_cross_attn, quantize_ffn) != getattr(
-                transformer, "quantization_config"
-            ):
-                quantize_self_attn, quantize_cross_attn, quantize_ffn = getattr(
-                    transformer, "quantization_config"
+
+        is_av = transformer.__class__.__name__ == "LTXAVModel"
+        if is_av:
+            patcher = patch_comfyui_native_avtransformer
+        else:
+            patcher = patch_comfyui_native_transformer
+
+        if check_deprecated():
+            logging.info("This node is deprecated soon. Use new one.")
+            quant_audio_path = False
+            quant_type = "blockwise-fp8"
+            patcher(transformer, use_fp8_attention, True, quant_type, quant_audio_path)
+        else:
+            quantize_self_attn, quantize_cross_attn, quantize_ffn = (
+                LTXVQ8Patch.PRESETS.get(
+                    quantization_preset,
+                    (quantize_self_attn, quantize_cross_attn, quantize_ffn),
                 )
-        patch_comfyui_native_transformer(
-            transformer,
-            use_fp8_attention,
-            True,
-            quantize_self_attn,
-            quantize_cross_attn,
-            quantize_ffn,
-        )
+            )
+            if getattr(transformer, "quantization_config", None) is not None:
+                if (quantize_self_attn, quantize_cross_attn, quantize_ffn) != getattr(
+                    transformer, "quantization_config"
+                ):
+                    quantize_self_attn, quantize_cross_attn, quantize_ffn = getattr(
+                        transformer, "quantization_config"
+                    )
+            patcher(
+                transformer,
+                use_fp8_attention,
+                True,
+                quantize_self_attn,
+                quantize_cross_attn,
+                quantize_ffn,
+            )
+            setattr(
+                transformer,
+                "quantization_config",
+                (quantize_self_attn, quantize_cross_attn, quantize_ffn),
+            )
         setattr(transformer, "is_q8_patched", True)
-        setattr(
-            transformer,
-            "quantization_config",
-            (quantize_self_attn, quantize_cross_attn, quantize_ffn),
-        )
         setattr(transformer, "use_fp8_attention", use_fp8_attention)
         return (m,)
 
