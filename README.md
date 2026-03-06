@@ -2,7 +2,7 @@
 
 [![GitHub](https://img.shields.io/badge/LTX-Repo-blue?logo=github)](https://github.com/Lightricks/LTX-2)
 [![Website](https://img.shields.io/badge/Website-LTX-181717?logo=google-chrome)](https://ltx.io/model)
-[![Model](https://img.shields.io/badge/HuggingFace-Model-orange?logo=huggingface)](https://huggingface.co/Lightricks/LTX-2)
+[![Model](https://img.shields.io/badge/HuggingFace-Model-orange?logo=huggingface)](https://huggingface.co/Lightricks/LTX-2.3)
 [![LTXV Trainer](https://img.shields.io/badge/LTX-Trainer%20Repo-9146FF)](https://github.com/Lightricks/LTX-2/tree/main/packages/ltx-trainer)
 [![Demo](https://img.shields.io/badge/Demo-Try%20Now-brightgreen?logo=vercel)](https://app.ltx.studio/ltx-2-playground/i2v)
 [![Paper](https://img.shields.io/badge/Paper-arXiv-B31B1B?logo=arxiv)](https://videos.ltx.io/LTX-2/grants/LTX_2_Technical_Report_compressed.pdf)
@@ -47,26 +47,33 @@ You can see them all at:
 ComfyUI/custom_nodes/ComfyUI-LTXVideo/example_workflows/
 ```
 
-* [`Text to video full model`](./example_workflows/LTX-2_T2V_Full_wLora.json)
-* [`Text to video distilled model (Fast)`](./example_workflows/LTX-2_T2V_Distilled_wLora.json)
-* [`Image to video full model`](./example_workflows/LTX-2_I2V_Full_wLora.json)
-* [`Image to video distilled model (Fast)`](./example_workflows/LTX-2_I2V_Distilled_wLora.json)
-* [`Video to video detailer`](./example_workflows/LTX-2_V2V_Detailer.json)
-* [`IC-LoRA distilled model (depth + human pose + edges)`](./example_workflows/LTX-2_ICLoRA_All_Distilled.json)
-* [`IC-LoRA distilled model with downscaled reference latents`](./example_workflows/LTX-2_ICLoRA_All_Distilled_ref0.5.json)
+LTX-2.3 Workflows:
+
+* [`Text/image to video full/distilled model; single stage`](./example_workflows/2.3/LTX-2.3_T2V_I2V_Single_Stage_Distilled_Full.json)
+* [`Text/image to video distilled model; two stages (with upsampling)`](./example_workflows/2.3/LTX-2.3_T2V_I2V_Two_Stage_Distilled.json)
+
+Older Workflows (LTX-2.0):
+
+* [`Text to video full model`](./example_workflows/2.0/LTX-2_T2V_Full_wLora.json)
+* [`Text to video distilled model (Fast)`](./example_workflows/2.0/LTX-2_T2V_Distilled_wLora.json)
+* [`Image to video full model`](./example_workflows/2.0/LTX-2_I2V_Full_wLora.json)
+* [`Image to video distilled model (Fast)`](./example_workflows/2.0/LTX-2_I2V_Distilled_wLora.json)
+* [`Video to video detailer`](./example_workflows/2.0/LTX-2_V2V_Detailer.json)
+* [`IC-LoRA distilled model (depth + human pose + edges)`](./example_workflows/2.0/LTX-2_ICLoRA_All_Distilled.json)
+* [`IC-LoRA distilled model with downscaled reference latents`](./example_workflows/2.0/LTX-2_ICLoRA_All_Distilled_ref0.5.json)
 
 ## Union IC-LoRA Model
 
-We introduce a new **Union IC-LoRA** model that combines depth, pose, and edge control conditions into a single unified LoRA.
+We introduce a new **Union IC-LoRA** model that combines depth and edge (canny) control conditions into a single unified LoRA.
 
 ### Key Features
 
-- **Unified Control**: A single LoRA that supports multiple control conditions (depth, human pose, or edges).
+- **Unified Control**: A single LoRA that supports multiple control conditions (depth or edges).
 - **Downsampled Latent Processing**: The union LoRA operates on a downsampled latent size, which reduces memory usage and significantly speeds up inference while maintaining quality.
 
 ### How It Works
 
-The union LoRA is trained to understand and respond to all three control signals (depth maps, pose skeletons, and edge maps) within a single model. The model learns to:
+The union LoRA is trained to understand and respond to both control signals (depth maps and edge maps) within a single model. The model learns to:
 
 1. **Parse multiple conditions**: Identify which control signals are present in the input
 2. **Process at reduced resolution**: Work on downsampled latents to improve efficiency
@@ -75,28 +82,24 @@ The union LoRA is trained to understand and respond to all three control signals
 
 Download the following models:
 
-**LTX-2 Model Checkpoint** - Choose and download one of the models to `COMFYUI_ROOT_FOLDER/models/checkpoints` folder.
-  * [`ltx-2-19b-dev-fp8.safetensors`](https://huggingface.co/Lightricks/LTX-2/blob/main/ltx-2-19b-dev-fp8.safetensors)
-  * [`ltx-2-19b-distilled-fp8.safetensors`](https://huggingface.co/Lightricks/LTX-2/blob/main/ltx-2-19b-distilled-fp8.safetensors)
-  * [`ltx-2-19b-dev.safetensors`](https://huggingface.co/Lightricks/LTX-2/blob/main/ltx-2-19b-dev.safetensors)
-  * [`ltx-2-19b-distilled.safetensors`](https://huggingface.co/Lightricks/LTX-2/blob/main/ltx-2-19b-distilled.safetensors)
+**LTX-2.3 Model Checkpoint** - Choose and download one of the models to `COMFYUI_ROOT_FOLDER/models/checkpoints` folder.
+  * [`ltx-2.3-22b-dev.safetensors`](https://huggingface.co/Lightricks/LTX-2.3/blob/main/ltx-2.3-22b-dev.safetensors)
+  * [`ltx-2.3-22b-distilled.safetensors`](https://huggingface.co/Lightricks/LTX-2.3/blob/main/ltx-2.3-22b-distilled.safetensors)
 
 **Spatial Upscaler** - Required for current two-stage pipeline implementations in this repository. Download to `COMFYUI_ROOT_FOLDER/models/latent_upscale_models` folder.
-  * [`ltx-2-spatial-upscaler-x2-1.0.safetensors`](https://huggingface.co/Lightricks/LTX-2/blob/main/ltx-2-spatial-upscaler-x2-1.0.safetensors)
+  * [`ltx-2.3-spatial-upscaler-x2-1.0.safetensors`](https://huggingface.co/Lightricks/LTX-2.3/blob/main/ltx-2.3-spatial-upscaler-x2-1.0.safetensors)
+  * [`ltx-2.3-spatial-upscaler-x1.5-1.0.safetensors`](https://huggingface.co/Lightricks/LTX-2.3/blob/main/ltx-2.3-spatial-upscaler-x1.5-1.0.safetensors)
 
 **Temporal Upscaler** - Required for current two-stage pipeline implementations in this repository. Download to `COMFYUI_ROOT_FOLDER/models/latent_upscale_models` folder.
-  * [`ltx-2-temporal-upscaler-x2-1.0.safetensors`](https://huggingface.co/Lightricks/LTX-2/blob/main/ltx-2-temporal-upscaler-x2-1.0.safetensors)
+  * [`ltx-2.3-temporal-upscaler-x2-1.0.safetensors`](https://huggingface.co/Lightricks/LTX-2.3/blob/main/ltx-2.3-temporal-upscaler-x2-1.0.safetensors)
 
 **Distilled LoRA** - Required for current two-stage pipeline implementations in this repository (except DistilledPipeline and ICLoraPipeline). Download to `COMFYUI_ROOT_FOLDER/models/loras` folder.
-  * [`ltx-2-19b-distilled-lora-384.safetensors`](https://huggingface.co/Lightricks/LTX-2/blob/main/ltx-2-19b-distilled-lora-384.safetensors)
+  * [`ltx-2.3-22b-distilled-lora-384.safetensors`](https://huggingface.co/Lightricks/LTX-2.3/blob/main/ltx-2.3-22b-distilled-lora-384.safetensors)
 
 **Gemma Text Encoder** Download all files from the repository to `COMFYUI_ROOT_FOLDER/models/text_encoders/gemma-3-12b-it-qat-q4_0-unquantized`.
   * [`Gemma 3`](https://huggingface.co/google/gemma-3-12b-it-qat-q4_0-unquantized)
 
 **LoRAs** Choose and download to `COMFYUI_ROOT_FOLDER/models/loras` folder.
-  * [`ltx-2-19b-ic-lora-union-ref0.5.safetensors`](https://huggingface.co/Lightricks/LTX-2-19b-IC-LoRA-Union-Control/blob/main/ltx-2-19b-ic-lora-union-control-ref0.5.safetensors) *(Union LoRA - supports depth, pose, and edges in one model)*
-  * [`ltx-2-19b-ic-lora-canny-control.safetensors`](https://huggingface.co/Lightricks/LTX-2-19b-IC-LoRA-Canny-Control/blob/main/ltx-2-19b-ic-lora-canny-control.safetensors)
-  * [`ltx-2-19b-ic-lora-depth-control.safetensors`](https://huggingface.co/Lightricks/LTX-2-19b-IC-LoRA-Depth-Control/blob/main/ltx-2-19b-ic-lora-depth-control.safetensors)
   * [`ltx-2-19b-ic-lora-detailer.safetensors`](https://huggingface.co/Lightricks/LTX-2-19b-IC-LoRA-Detailer/blob/main/ltx-2-19b-ic-lora-detailer.safetensors)
   * [`ltx-2-19b-ic-lora-pose-control.safetensors`](https://huggingface.co/Lightricks/LTX-2-19b-IC-LoRA-Pose-Control/blob/main/ltx-2-19b-ic-lora-pose-control.safetensors)
   * [`ltx-2-19b-lora-camera-control-dolly-in.safetensors`](https://huggingface.co/Lightricks/LTX-2-19b-LoRA-Camera-Control-Dolly-In/blob/main/ltx-2-19b-lora-camera-control-dolly-in.safetensors)

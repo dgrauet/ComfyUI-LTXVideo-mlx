@@ -2,10 +2,13 @@ import math
 from typing import Optional
 
 import comfy.ldm.common_dit
+import comfy.ops
 import torch
 from comfy.ldm.lightricks.model import (
     CrossAttention,
     FeedForward,
+    LTXFrequenciesPrecision,
+    LTXRopeType,
     generate_freq_grid_np,
     interleaved_freqs_cis,
     split_freqs_cis,
@@ -52,6 +55,7 @@ class BasicTransformerBlock1D(nn.Module):
         d_head,
         context_dim=None,
         attn_precision=None,
+        apply_gated_attention=False,
         dtype=None,
         device=None,
         operations=None,
@@ -65,6 +69,7 @@ class BasicTransformerBlock1D(nn.Module):
             heads=n_heads,
             dim_head=d_head,
             context_dim=None,
+            apply_gated_attention=apply_gated_attention,
             dtype=dtype,
             device=device,
             operations=operations,
@@ -123,6 +128,7 @@ class Embeddings1DConnector(nn.Module):
         positional_embedding_max_pos=[1],
         causal_temporal_positioning=False,
         num_learnable_registers: Optional[int] = 128,
+        apply_gated_attention=False,
         dtype=None,
         device=None,
         operations=None,
@@ -147,6 +153,7 @@ class Embeddings1DConnector(nn.Module):
                     num_attention_heads,
                     attention_head_dim,
                     context_dim=cross_attention_dim,
+                    apply_gated_attention=apply_gated_attention,
                     dtype=dtype,
                     device=device,
                     operations=operations,
@@ -330,3 +337,115 @@ class Embeddings1DConnector(nn.Module):
         hidden_states = comfy.ldm.common_dit.rms_norm(hidden_states)
 
         return hidden_states, attention_mask
+
+
+# ---------------------------------------------------------------------------
+# Loading helpers
+# ---------------------------------------------------------------------------
+
+_PREFIX_BASE = "model.diffusion_model."
+
+
+def load_embeddings_connector(
+    sd,
+    connector_prefix,
+    connector_config,
+    dtype=torch.bfloat16,
+    rope_type=LTXRopeType.INTERLEAVED,
+    frequencies_precision=LTXFrequenciesPrecision.FLOAT32,
+    pe_max_pos=None,
+):
+    sd_connector = {
+        k[len(connector_prefix) :]: v
+        for k, v in sd.items()
+        if k.startswith(connector_prefix)
+    }
+
+    if len(sd_connector) == 0:
+        return None
+
+    operations = comfy.ops.pick_operations(dtype, dtype, disable_fast_fp8=True)
+    connector = Embeddings1DConnector(
+        num_attention_heads=connector_config["num_attention_heads"],
+        attention_head_dim=connector_config["attention_head_dim"],
+        num_layers=connector_config["num_layers"],
+        apply_gated_attention=connector_config.get("apply_gated_attention", False),
+        dtype=dtype,
+        operations=operations,
+        positional_embedding_max_pos=pe_max_pos if pe_max_pos is not None else [1],
+        split_rope=rope_type == LTXRopeType.SPLIT,
+        double_precision_rope=frequencies_precision == LTXFrequenciesPrecision.FLOAT64,
+    )
+    connector.load_state_dict(sd_connector)
+    return connector
+
+
+def load_video_embeddings_connector(sd, transformer_config, dtype=torch.bfloat16):
+    rope_type = LTXRopeType.from_dict(transformer_config)
+    frequencies_precision = LTXFrequenciesPrecision.from_dict(transformer_config)
+    pe_max_pos = transformer_config.get("connector_positional_embedding_max_pos", [1])
+
+    video_only_connector_prefix = f"{_PREFIX_BASE}embeddings_connector."
+    av_connector_prefix = f"{_PREFIX_BASE}video_embeddings_connector."
+    prefix = (
+        av_connector_prefix
+        if f"{_PREFIX_BASE}audio_adaln_single.linear.weight" in sd
+        else video_only_connector_prefix
+    )
+
+    connector_config = {
+        "num_attention_heads": transformer_config.get(
+            "connector_num_attention_heads", 30
+        ),
+        "attention_head_dim": transformer_config.get(
+            "connector_attention_head_dim", 128
+        ),
+        "num_layers": transformer_config.get("connector_num_layers", 2),
+        "apply_gated_attention": transformer_config.get(
+            "connector_apply_gated_attention", False
+        ),
+    }
+
+    return load_embeddings_connector(
+        sd,
+        prefix,
+        connector_config,
+        dtype,
+        rope_type,
+        frequencies_precision,
+        pe_max_pos,
+    )
+
+
+def load_audio_embeddings_connector(sd, transformer_config, dtype=torch.bfloat16):
+    rope_type = LTXRopeType.from_dict(transformer_config)
+    frequencies_precision = LTXFrequenciesPrecision.from_dict(transformer_config)
+    pe_max_pos = transformer_config.get("connector_positional_embedding_max_pos", [1])
+
+    connector_config = {
+        "num_attention_heads": transformer_config.get(
+            "audio_connector_num_attention_heads",
+            transformer_config.get("connector_num_attention_heads", 30),
+        ),
+        "attention_head_dim": transformer_config.get(
+            "audio_connector_attention_head_dim",
+            transformer_config.get("connector_attention_head_dim", 128),
+        ),
+        "num_layers": transformer_config.get(
+            "audio_connector_num_layers",
+            transformer_config.get("connector_num_layers", 2),
+        ),
+        "apply_gated_attention": transformer_config.get(
+            "connector_apply_gated_attention", False
+        ),
+    }
+
+    return load_embeddings_connector(
+        sd,
+        f"{_PREFIX_BASE}audio_embeddings_connector.",
+        connector_config,
+        dtype,
+        rope_type,
+        frequencies_precision,
+        pe_max_pos,
+    )

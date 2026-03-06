@@ -19,6 +19,8 @@ class GuiderParameters:
         modality_scale: float = 1.0,
         skip_step: int = 0,
         cross_attn: bool = True,
+        cfg_zero_star: bool = False,
+        zero_init_sigma: float = 1.0,
     ):
         self.cfg_scale = cfg_scale
         self.stg_scale = stg_scale
@@ -27,6 +29,8 @@ class GuiderParameters:
         self.modality_scale = modality_scale
         self.skip_step = skip_step
         self.cross_attn = cross_attn
+        self.cfg_zero_star = cfg_zero_star
+        self.zero_init_sigma = zero_init_sigma
 
     def __str__(self):
         return f"cfg_scale: {self.cfg_scale}, stg_scale: {self.stg_scale}, rescale_scale: {self.rescale_scale}, modality_scale: {self.modality_scale}"
