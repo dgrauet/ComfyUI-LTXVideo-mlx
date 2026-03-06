@@ -51,6 +51,8 @@ LTX-2.3 Workflows:
 
 * [`Text/image to video full/distilled model; single stage`](./example_workflows/2.3/LTX-2.3_T2V_I2V_Single_Stage_Distilled_Full.json)
 * [`Text/image to video distilled model; two stages (with upsampling)`](./example_workflows/2.3/LTX-2.3_T2V_I2V_Two_Stage_Distilled.json)
+* [`IC-LoRA distilled model depth + human pose + edges`](./example_workflows/2.3/LTX-2.3_ICLoRA_Union_Control_Distilled.json)
+* [`IC-LoRA distilled model I2V motion tracking`](./example_workflows/2.3/LTX-2.3_ICLoRA_Motion_Track_Distilled.json)
 
 Older Workflows (LTX-2.0):
 
@@ -100,6 +102,8 @@ Download the following models:
   * [`Gemma 3`](https://huggingface.co/google/gemma-3-12b-it-qat-q4_0-unquantized)
 
 **LoRAs** Choose and download to `COMFYUI_ROOT_FOLDER/models/loras` folder.
+  * [`ltx-2.3-22b-ic-lora-union-control-ref0.5.safetensors`](https://huggingface.co/Lightricks/LTX-2.3-22b-IC-LoRA-Union-Control/blob/main/ltx-2.3-22b-ic-lora-union-control-ref0.5.safetensors)
+  * [`ltx-2.3-22b-ic-lora-motion-track-control-ref0.5.safetensors`](https://huggingface.co/Lightricks/LTX-2.3-22b-IC-LoRA-Motion-Track-Control/blob/main/ltx-2.3-22b-ic-lora-motion-track-control-ref0.5.safetensors)
   * [`ltx-2-19b-ic-lora-detailer.safetensors`](https://huggingface.co/Lightricks/LTX-2-19b-IC-LoRA-Detailer/blob/main/ltx-2-19b-ic-lora-detailer.safetensors)
   * [`ltx-2-19b-ic-lora-pose-control.safetensors`](https://huggingface.co/Lightricks/LTX-2-19b-IC-LoRA-Pose-Control/blob/main/ltx-2-19b-ic-lora-pose-control.safetensors)
   * [`ltx-2-19b-lora-camera-control-dolly-in.safetensors`](https://huggingface.co/Lightricks/LTX-2-19b-LoRA-Camera-Control-Dolly-In/blob/main/ltx-2-19b-lora-camera-control-dolly-in.safetensors)
