@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from nodes_registry import comfy_node
-
 try:
     import mlx.core as mx
 
@@ -12,7 +10,6 @@ except ImportError:
     HAS_MLX = False
 
 
-@comfy_node(name="LTXVMLXGuiderConfig", skip=not HAS_MLX)
 class LTXVMLXGuiderConfig:
     """Configure guidance parameters for MLX LTX-2 sampling."""
 

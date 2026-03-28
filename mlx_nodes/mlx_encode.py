@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from nodes_registry import comfy_node
-
 try:
     import mlx.core as mx
 
@@ -31,7 +29,6 @@ def _evaluate_arrays(*arrays):
     mx.eval(*arrays)
 
 
-@comfy_node(name="LTXVMLXTextEncode", skip=not HAS_MLX)
 class LTXVMLXTextEncode:
     """Encode text prompts to video and audio embeddings using MLX Gemma encoder."""
 

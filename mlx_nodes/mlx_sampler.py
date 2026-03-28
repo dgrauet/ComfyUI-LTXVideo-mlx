@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from nodes_registry import comfy_node
-
 try:
     import mlx.core as mx
 
@@ -21,7 +19,6 @@ def _materialize(*arrays):
     mx.eval(*arrays)  # noqa: S307 - MLX graph evaluation, not Python eval
 
 
-@comfy_node(name="LTXVMLXBaseSampler", skip=not HAS_MLX)
 class LTXVMLXBaseSampler:
     """Text-to-Video and Image-to-Video sampling using MLX on Apple Silicon."""
 
@@ -199,7 +196,6 @@ class LTXVMLXBaseSampler:
         return (video_torch, audio_torch)
 
 
-@comfy_node(name="LTXVMLXTwoStageSampler", skip=not HAS_MLX)
 class LTXVMLXTwoStageSampler:
     """Two-stage MLX sampling: CFG at half-res, upscale, distilled LoRA refine."""
 
@@ -501,7 +497,6 @@ class LTXVMLXTwoStageSampler:
         return (video_torch, audio_torch)
 
 
-@comfy_node(name="LTXVMLXExtendSampler", skip=not HAS_MLX)
 class LTXVMLXExtendSampler:
     """Extend existing video using MLX on Apple Silicon."""
 

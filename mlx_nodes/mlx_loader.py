@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from nodes_registry import comfy_node
-
 try:
     import mlx.core as mx
 
@@ -155,7 +153,6 @@ class LazyMLXVAE:
         aggressive_cleanup()
 
 
-@comfy_node(name="LTXVMLXCheckpointLoader", skip=not HAS_MLX)
 class LTXVMLXCheckpointLoader:
     """Load LTX-2 model weights in MLX format for Apple Silicon inference."""
 
@@ -192,7 +189,6 @@ class LTXVMLXCheckpointLoader:
         return (model, vae)
 
 
-@comfy_node(name="LTXVMLXTextEncoderLoader", skip=not HAS_MLX)
 class LTXVMLXTextEncoderLoader:
     """Load Gemma-3 text encoder in MLX format."""
 

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from nodes_registry import comfy_node
-
 try:
     import mlx.core as mx
 
@@ -12,7 +10,6 @@ except ImportError:
     HAS_MLX = False
 
 
-@comfy_node(name="LTXVMLXSelectLatents", skip=not HAS_MLX)
 class LTXVMLXSelectLatents:
     """Select a range of frames from MLX video latents."""
 
@@ -44,7 +41,6 @@ class LTXVMLXSelectLatents:
         return (result,)
 
 
-@comfy_node(name="LTXVMLXConcatLatents", skip=not HAS_MLX)
 class LTXVMLXConcatLatents:
     """Concatenate two MLX video latents along the frame dimension."""
 

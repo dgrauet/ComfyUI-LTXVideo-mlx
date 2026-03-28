@@ -5,8 +5,6 @@ from __future__ import annotations
 import numpy as np
 import torch
 
-from nodes_registry import comfy_node
-
 try:
     import mlx.core as mx
 
@@ -20,7 +18,6 @@ def _materialize(*arrays):
     mx.eval(*arrays)  # noqa: S307 - MLX graph, not Python eval
 
 
-@comfy_node(name="LTXVMLXVAEDecode", skip=not HAS_MLX)
 class LTXVMLXVAEDecode:
     """Decode video latents to frames using MLX VAE."""
 
@@ -52,7 +49,6 @@ class LTXVMLXVAEDecode:
         return (mx_video_frames_to_torch(frames),)
 
 
-@comfy_node(name="LTXVMLXVAEEncode", skip=not HAS_MLX)
 class LTXVMLXVAEEncode:
     """Encode video frames to latents using MLX VAE."""
 
@@ -89,7 +85,6 @@ class LTXVMLXVAEEncode:
         return ({"video_latent": latent},)
 
 
-@comfy_node(name="LTXVMLXAudioDecode", skip=not HAS_MLX)
 class LTXVMLXAudioDecode:
     """Decode audio latents to waveform using MLX audio VAE + vocoder."""
 
