@@ -3,3 +3,5 @@ einops
 huggingface_hub>=0.25.2
 ninja~=1.11.1.4
 transformers[timm]>=4.50.0
+ltx-core-mlx @ git+https://github.com/dgrauet/ltx-2-mlx#subdirectory=packages/ltx-core-mlx ; sys_platform == "darwin"
+ltx-pipelines-mlx @ git+https://github.com/dgrauet/ltx-2-mlx#subdirectory=packages/ltx-pipelines-mlx ; sys_platform == "darwin"

@@ -1,0 +1,157 @@
+{
+  "last_node_id": 9,
+  "last_link_id": 12,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "LTXVMLXCheckpointLoader",
+      "pos": [0, 0],
+      "size": [350, 82],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "outputs": [
+        {"name": "model", "type": "LTXV_MLX_MODEL", "links": [1], "slot_index": 0},
+        {"name": "vae", "type": "LTXV_MLX_VAE", "links": [2], "slot_index": 1}
+      ],
+      "properties": {"Node name for S&R": "LTXVMLXCheckpointLoader"},
+      "widgets_values": ["dgrauet/ltx-2.3-mlx-q8", false]
+    },
+    {
+      "id": 2,
+      "type": "LTXVMLXTextEncoderLoader",
+      "pos": [0, 150],
+      "size": [350, 106],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "outputs": [
+        {"name": "text_encoder", "type": "LTXV_MLX_TEXT_ENCODER", "links": [3], "slot_index": 0}
+      ],
+      "properties": {"Node name for S&R": "LTXVMLXTextEncoderLoader"},
+      "widgets_values": ["dgrauet/ltx-2.3-mlx-q8", "mlx-community/gemma-3-12b-it-4bit", false]
+    },
+    {
+      "id": 3,
+      "type": "LTXVMLXTextEncode",
+      "pos": [420, 150],
+      "size": [400, 150],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {"name": "text_encoder", "type": "LTXV_MLX_TEXT_ENCODER", "link": 3}
+      ],
+      "outputs": [
+        {"name": "conditioning", "type": "LTXV_MLX_CONDITIONING", "links": [4], "slot_index": 0}
+      ],
+      "properties": {"Node name for S&R": "LTXVMLXTextEncode"},
+      "widgets_values": ["A cinematic shot of a golden retriever running through a field of wildflowers at sunset, slow motion, 4K quality", "blurry, out of focus, overexposed, underexposed, low quality, watermarked, text overlay"]
+    },
+    {
+      "id": 4,
+      "type": "LTXVMLXGuiderConfig",
+      "pos": [420, 370],
+      "size": [300, 170],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "outputs": [
+        {"name": "guider_config", "type": "LTXV_MLX_GUIDER_CONFIG", "links": [5], "slot_index": 0}
+      ],
+      "properties": {"Node name for S&R": "LTXVMLXGuiderConfig"},
+      "widgets_values": [3.0, 0.0, "28", 0.7, 3.0]
+    },
+    {
+      "id": 5,
+      "type": "LoadImage",
+      "pos": [420, 600],
+      "size": [300, 310],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "outputs": [
+        {"name": "IMAGE", "type": "IMAGE", "links": [6], "slot_index": 0},
+        {"name": "MASK", "type": "MASK", "links": [], "slot_index": 1}
+      ],
+      "properties": {"Node name for S&R": "LoadImage"},
+      "widgets_values": ["example.png", "image"]
+    },
+    {
+      "id": 6,
+      "type": "LTXVMLXTwoStageSampler",
+      "pos": [900, 0],
+      "size": [350, 400],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {"name": "model", "type": "LTXV_MLX_MODEL", "link": 1},
+        {"name": "conditioning", "type": "LTXV_MLX_CONDITIONING", "link": 4},
+        {"name": "vae", "type": "LTXV_MLX_VAE", "link": 2},
+        {"name": "image", "type": "IMAGE", "link": 6},
+        {"name": "guider_config", "type": "LTXV_MLX_GUIDER_CONFIG", "link": 5}
+      ],
+      "outputs": [
+        {"name": "video_frames", "type": "IMAGE", "links": [8], "slot_index": 0},
+        {"name": "audio", "type": "AUDIO", "links": [9], "slot_index": 1}
+      ],
+      "properties": {"Node name for S&R": "LTXVMLXTwoStageSampler"},
+      "widgets_values": [704, 480, 97, 42, 30, 3, "transformer-dev.safetensors", "ltx-2.3-22b-distilled-lora-384.safetensors", 1.0]
+    },
+    {
+      "id": 7,
+      "type": "CreateVideo",
+      "pos": [1350, 0],
+      "size": [270, 102],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {"name": "images", "type": "IMAGE", "link": 8},
+        {"name": "audio", "type": "AUDIO", "link": 9, "shape": 7}
+      ],
+      "outputs": [
+        {"name": "VIDEO", "type": "VIDEO", "links": [10], "slot_index": 0}
+      ],
+      "properties": {"Node name for S&R": "CreateVideo"},
+      "widgets_values": [24]
+    },
+    {
+      "id": 8,
+      "type": "SaveVideo",
+      "pos": [1700, 0],
+      "size": [270, 58],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {"name": "video", "type": "VIDEO", "link": 10}
+      ],
+      "outputs": [],
+      "properties": {"Node name for S&R": "SaveVideo"},
+      "widgets_values": ["mlx_two_stage_output"]
+    }
+  ],
+  "links": [
+    [1, 1, 0, 6, 0, "LTXV_MLX_MODEL"],
+    [2, 1, 1, 6, 2, "LTXV_MLX_VAE"],
+    [3, 2, 0, 3, 0, "LTXV_MLX_TEXT_ENCODER"],
+    [4, 3, 0, 6, 1, "LTXV_MLX_CONDITIONING"],
+    [5, 4, 0, 6, 4, "LTXV_MLX_GUIDER_CONFIG"],
+    [6, 5, 0, 6, 3, "IMAGE"],
+    [8, 6, 0, 7, 0, "IMAGE"],
+    [9, 6, 1, 7, 1, "AUDIO"],
+    [10, 7, 0, 8, 0, "VIDEO"]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "ds": {"scale": 1, "offset": [0, 0]},
+    "info": {
+      "name": "MLX Two-Stage T2V/I2V with CFG",
+      "description": "Two-stage generation on Apple Silicon: Stage 1 at half resolution with CFG guidance (30 steps), upscale, Stage 2 refinement with distilled LoRA (3 steps). Connect an image to the LoadImage node for I2V, or disconnect it for T2V."
+    }
+  },
+  "version": 0.4
+}
