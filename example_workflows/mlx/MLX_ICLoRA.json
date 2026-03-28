@@ -1,0 +1,144 @@
+{
+  "last_node_id": 9,
+  "last_link_id": 11,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "LTXVMLXCheckpointLoader",
+      "pos": [0, 0],
+      "size": [350, 82],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "outputs": [
+        {"name": "model", "type": "LTXV_MLX_MODEL", "links": [1], "slot_index": 0},
+        {"name": "vae", "type": "LTXV_MLX_VAE", "links": [2], "slot_index": 1}
+      ],
+      "properties": {"Node name for S&R": "LTXVMLXCheckpointLoader"},
+      "widgets_values": ["dgrauet/ltx-2.3-mlx-q8", false]
+    },
+    {
+      "id": 2,
+      "type": "LTXVMLXTextEncoderLoader",
+      "pos": [0, 150],
+      "size": [350, 106],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "outputs": [
+        {"name": "text_encoder", "type": "LTXV_MLX_TEXT_ENCODER", "links": [3], "slot_index": 0}
+      ],
+      "properties": {"Node name for S&R": "LTXVMLXTextEncoderLoader"},
+      "widgets_values": ["dgrauet/ltx-2.3-mlx-q8", "mlx-community/gemma-3-12b-it-4bit", false]
+    },
+    {
+      "id": 3,
+      "type": "LTXVMLXTextEncode",
+      "pos": [420, 150],
+      "size": [400, 150],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {"name": "text_encoder", "type": "LTXV_MLX_TEXT_ENCODER", "link": 3}
+      ],
+      "outputs": [
+        {"name": "conditioning", "type": "LTXV_MLX_CONDITIONING", "links": [4], "slot_index": 0}
+      ],
+      "properties": {"Node name for S&R": "LTXVMLXTextEncode"},
+      "widgets_values": ["A person dancing in a studio, professional lighting, smooth movements", "blurry, out of focus, low quality"]
+    },
+    {
+      "id": 4,
+      "type": "LoadVideo",
+      "pos": [0, 400],
+      "size": [350, 310],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "outputs": [
+        {"name": "IMAGE", "type": "IMAGE", "links": [5], "slot_index": 0},
+        {"name": "AUDIO", "type": "AUDIO", "links": [], "slot_index": 1},
+        {"name": "video_info", "type": "VHS_VIDEOINFO", "links": [], "slot_index": 2}
+      ],
+      "properties": {"Node name for S&R": "LoadVideo"},
+      "widgets_values": ["control_depth.mp4"],
+      "title": "Load Control Video (depth/pose/edges)"
+    },
+    {
+      "id": 5,
+      "type": "LTXVMLXICLoRASampler",
+      "pos": [900, 0],
+      "size": [350, 450],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {"name": "model", "type": "LTXV_MLX_MODEL", "link": 1},
+        {"name": "conditioning", "type": "LTXV_MLX_CONDITIONING", "link": 4},
+        {"name": "vae", "type": "LTXV_MLX_VAE", "link": 2},
+        {"name": "reference_video", "type": "IMAGE", "link": 5},
+        {"name": "image", "type": "IMAGE", "link": null}
+      ],
+      "outputs": [
+        {"name": "video_frames", "type": "IMAGE", "links": [8], "slot_index": 0},
+        {"name": "audio", "type": "AUDIO", "links": [9], "slot_index": 1}
+      ],
+      "properties": {"Node name for S&R": "LTXVMLXICLoRASampler"},
+      "widgets_values": ["Lightricks/LTX-2.3-22b-IC-LoRA-Union-Control", 1.0, 1.0, 704, 480, 97, 42, 8, 3, 1.0]
+    },
+    {
+      "id": 6,
+      "type": "CreateVideo",
+      "pos": [1350, 0],
+      "size": [270, 102],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {"name": "images", "type": "IMAGE", "link": 8},
+        {"name": "audio", "type": "AUDIO", "link": 9, "shape": 7}
+      ],
+      "outputs": [
+        {"name": "VIDEO", "type": "VIDEO", "links": [10], "slot_index": 0}
+      ],
+      "properties": {"Node name for S&R": "CreateVideo"},
+      "widgets_values": [24]
+    },
+    {
+      "id": 7,
+      "type": "SaveVideo",
+      "pos": [1700, 0],
+      "size": [270, 58],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {"name": "video", "type": "VIDEO", "link": 10}
+      ],
+      "outputs": [],
+      "properties": {"Node name for S&R": "SaveVideo"},
+      "widgets_values": ["mlx_iclora_output"]
+    }
+  ],
+  "links": [
+    [1, 1, 0, 5, 0, "LTXV_MLX_MODEL"],
+    [2, 1, 1, 5, 2, "LTXV_MLX_VAE"],
+    [3, 2, 0, 3, 0, "LTXV_MLX_TEXT_ENCODER"],
+    [4, 3, 0, 5, 1, "LTXV_MLX_CONDITIONING"],
+    [5, 4, 0, 5, 3, "IMAGE"],
+    [8, 5, 0, 6, 0, "IMAGE"],
+    [9, 5, 1, 6, 1, "AUDIO"],
+    [10, 6, 0, 7, 0, "VIDEO"]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "ds": {"scale": 1, "offset": [0, 0]},
+    "info": {
+      "name": "MLX IC-LoRA Conditioned Video Generation",
+      "description": "Generate video conditioned on a control signal (depth, pose, edges) using IC-LoRA on Apple Silicon. Two-stage: Stage 1 with fused LoRA at half-res, Stage 2 upscale + refine with clean model. Load a control video (depth map, pose skeleton, etc.) into the LoadVideo node. Change lora_path to use different IC-LoRA models (Union-Control, Motion-Track, etc.)."
+    }
+  },
+  "version": 0.4
+}

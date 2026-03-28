@@ -675,3 +675,241 @@ class LTXVMLXExtendSampler:
         audio_torch = mx_audio_to_torch(waveform, sample_rate=48000)
 
         return (video_torch, audio_torch)
+
+
+class LTXVMLXICLoRASampler:
+    """IC-LoRA conditioned video generation using MLX on Apple Silicon.
+
+    Two-stage pipeline: Stage 1 at half-res with fused LoRA for control signal
+    conditioning (depth, pose, edges), Stage 2 upscale + refine with clean model.
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "model": ("LTXV_MLX_MODEL",),
+                "conditioning": ("LTXV_MLX_CONDITIONING",),
+                "vae": ("LTXV_MLX_VAE",),
+                "reference_video": ("IMAGE",),
+                "lora_path": ("STRING", {
+                    "default": "Lightricks/LTX-2.3-22b-IC-LoRA-Union-Control",
+                    "tooltip": "Path to IC-LoRA .safetensors or HuggingFace repo ID",
+                }),
+                "lora_strength": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.05}),
+                "reference_strength": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.05}),
+                "width": ("INT", {"default": 704, "min": 64, "max": 2048, "step": 32}),
+                "height": ("INT", {"default": 480, "min": 64, "max": 2048, "step": 32}),
+                "num_frames": ("INT", {"default": 97, "min": 1, "max": 257, "step": 8}),
+                "seed": ("INT", {"default": 42, "min": 0, "max": 2**31 - 1}),
+                "steps": ("INT", {"default": 8, "min": 1, "max": 100}),
+            },
+            "optional": {
+                "image": ("IMAGE",),
+                "stage2_steps": ("INT", {"default": 3, "min": 1, "max": 100}),
+                "conditioning_attention_strength": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.05}),
+            },
+        }
+
+    RETURN_TYPES = ("IMAGE", "AUDIO")
+    RETURN_NAMES = ("video_frames", "audio")
+    FUNCTION = "sample"
+    CATEGORY = "Lightricks/MLX"
+
+    def sample(
+        self, model, conditioning, vae, reference_video,
+        lora_path="Lightricks/LTX-2.3-22b-IC-LoRA-Union-Control",
+        lora_strength=1.0, reference_strength=1.0,
+        width=704, height=480, num_frames=97, seed=42, steps=8,
+        image=None, stage2_steps=3, conditioning_attention_strength=1.0,
+    ):
+        import json
+        import logging
+        from pathlib import Path
+
+        import numpy as np
+        from PIL import Image as PILImage
+        from safetensors import safe_open
+
+        from ltx_core_mlx.components.patchifiers import AudioPatchifier, VideoLatentPatchifier, compute_video_latent_shape
+        from ltx_core_mlx.conditioning.types.attention_strength_wrapper import ConditioningItemAttentionStrengthWrapper
+        from ltx_core_mlx.conditioning.types.latent_cond import (
+            LatentState, VideoConditionByLatentIndex, apply_conditioning, create_initial_state, noise_latent_state,
+        )
+        from ltx_core_mlx.conditioning.types.reference_video_cond import VideoConditionByReferenceLatent
+        from ltx_core_mlx.loader import LTXV_LORA_COMFY_RENAMING_MAP, LoraStateDictWithStrength, SafetensorsStateDictLoader, StateDict, apply_loras
+        from ltx_core_mlx.model.transformer.model import X0Model
+        from ltx_core_mlx.model.upsampler import LatentUpsampler
+        from ltx_core_mlx.utils.image import prepare_image_for_encoding
+        from ltx_core_mlx.utils.memory import aggressive_cleanup
+        from ltx_core_mlx.utils.positions import compute_audio_positions, compute_audio_token_count, compute_video_positions
+        from ltx_core_mlx.utils.weights import apply_quantization, load_split_safetensors
+        from ltx_pipelines_mlx.scheduler import DISTILLED_SIGMAS, STAGE_2_SIGMAS
+        from ltx_pipelines_mlx.utils.samplers import denoise_loop
+
+        from .mlx_utils import mx_audio_to_torch, mx_video_frames_to_torch, torch_image_to_pil
+
+        logger = logging.getLogger(__name__)
+        model_dir = model.model_dir
+        video_embeds = conditioning["video_embeds"]
+        audio_embeds = conditioning["audio_embeds"]
+        video_patchifier = VideoLatentPatchifier()
+        audio_patchifier = AudioPatchifier()
+
+        # --- Resolve LoRA path ---
+        lora_local = Path(lora_path)
+        if not lora_local.exists():
+            from huggingface_hub import snapshot_download
+            repo_dir = Path(snapshot_download(lora_path))
+            safetensors_files = list(repo_dir.glob("*.safetensors"))
+            if not safetensors_files:
+                raise FileNotFoundError(f"No .safetensors in {repo_dir}")
+            lora_local = safetensors_files[0]
+
+        reference_downscale_factor = 1
+        try:
+            with safe_open(str(lora_local), framework="numpy") as f:
+                metadata = f.metadata() or {}
+                reference_downscale_factor = int(metadata.get("reference_downscale_factor", 1))
+        except Exception as e:
+            logger.warning(f"Failed to read LoRA metadata: {e}")
+
+        # --- Load transformer and fuse LoRA ---
+        model.load()
+        dit = model.transformer
+        if lora_strength != 0:
+            import mlx.utils
+            model_weights = dict(mlx.utils.tree_flatten(dit.parameters()))
+            model_sd = StateDict(sd=model_weights, size=0, dtype=set())
+            lora_sd = SafetensorsStateDictLoader().load(str(lora_local), sd_ops=LTXV_LORA_COMFY_RENAMING_MAP)
+            fused_sd = apply_loras(model_sd, [LoraStateDictWithStrength(lora_sd, lora_strength)])
+            apply_quantization(dit, fused_sd.sd)
+            dit.load_weights(list(fused_sd.sd.items()))
+            aggressive_cleanup()
+
+        # --- Stage 1: Half-res with IC-LoRA ---
+        vae.load_encoder()
+        half_h, half_w = height // 2, width // 2
+        F, H_half, W_half = compute_video_latent_shape(num_frames, half_h, half_w)
+        audio_T = compute_audio_token_count(num_frames)
+        video_positions_1 = compute_video_positions(F, H_half, W_half)
+        audio_positions = compute_audio_positions(audio_T)
+        video_state = create_initial_state((1, F * H_half * W_half, 128), seed, positions=video_positions_1)
+        audio_state = create_initial_state((1, audio_T, 128), seed + 1, positions=audio_positions)
+
+        # Optional I2V
+        pil_image = None
+        if image is not None:
+            pil_image = torch_image_to_pil(image)
+            img_t = prepare_image_for_encoding(pil_image, H_half * 32, W_half * 32)
+            ref_lat = vae.encoder.encode(img_t[:, :, None, :, :])
+            _materialize(ref_lat)
+            video_state = apply_conditioning(
+                video_state,
+                [VideoConditionByLatentIndex(frame_indices=[0], clean_latent=ref_lat.transpose(0, 2, 3, 4, 1).reshape(1, -1, 128), strength=1.0)],
+                (F, H_half, W_half),
+            )
+
+        # Encode reference video
+        scale = reference_downscale_factor
+        _, ref_H_lat, ref_W_lat = compute_video_latent_shape(num_frames, half_h // scale, half_w // scale)
+        ref_h, ref_w = ref_H_lat * 32, ref_W_lat * 32
+        ref_np = reference_video.cpu().numpy()
+        ref_frames = []
+        for i in range(min(ref_np.shape[0], num_frames)):
+            fr = PILImage.fromarray((ref_np[i] * 255).astype(np.uint8))
+            fr = fr.resize((ref_w, ref_h), PILImage.Resampling.LANCZOS)
+            ref_frames.append(np.array(fr).astype(np.float32) / 255.0)
+        ref_arr = np.transpose(np.stack(ref_frames), (3, 0, 1, 2))[np.newaxis] * 2.0 - 1.0
+        encoded_ref = vae.encoder.encode(mx.array(ref_arr).astype(mx.bfloat16))
+        _materialize(encoded_ref)
+
+        ref_F, ref_H, ref_W = encoded_ref.shape[2], encoded_ref.shape[3], encoded_ref.shape[4]
+        ic_cond = VideoConditionByReferenceLatent(
+            reference_latent=encoded_ref.transpose(0, 2, 3, 4, 1).reshape(1, -1, 128),
+            reference_positions=compute_video_positions(ref_F, ref_H, ref_W),
+            downscale_factor=scale, strength=reference_strength,
+        )
+        if conditioning_attention_strength < 1.0:
+            ic_cond = ConditioningItemAttentionStrengthWrapper(conditioning=ic_cond, attention_mask=conditioning_attention_strength)
+
+        vae.unload_encoder()
+        video_state = ic_cond.apply(video_state, (F, H_half, W_half))
+
+        # Denoise Stage 1
+        sigmas_1 = DISTILLED_SIGMAS[: steps + 1] if steps < len(DISTILLED_SIGMAS) else DISTILLED_SIGMAS
+        output_1 = denoise_loop(
+            model=X0Model(dit), video_state=video_state, audio_state=audio_state,
+            video_text_embeds=video_embeds, audio_text_embeds=audio_embeds, sigmas=sigmas_1,
+        )
+        aggressive_cleanup()
+
+        gen_tokens = output_1.video_latent[:, : F * H_half * W_half, :]
+        video_half = video_patchifier.unpatchify(gen_tokens, (F, H_half, W_half))
+
+        # --- Stage 2: Upscale + refine (clean model) ---
+        vae.load_encoder()
+        upsampler_name = "spatial_upscaler_x2_v1_1"
+        config_path = model_dir / f"{upsampler_name}_config.json"
+        weights_path = model_dir / f"{upsampler_name}.safetensors"
+        upsampler = LatentUpsampler.from_config(json.loads(config_path.read_text()).get("config", {})) if config_path.exists() else LatentUpsampler()
+        if weights_path.exists():
+            upsampler.load_weights(list(load_split_safetensors(weights_path, prefix=f"{upsampler_name}.").items()))
+        aggressive_cleanup()
+
+        v = video_half.transpose(0, 2, 3, 4, 1)
+        video_upscaled = vae.encoder.normalize_latent(
+            upsampler(vae.encoder.denormalize_latent(v).transpose(0, 4, 1, 2, 3)).transpose(0, 2, 3, 4, 1)
+        ).transpose(0, 4, 1, 2, 3)
+        _materialize(video_upscaled)
+        H_full, W_full = H_half * 2, W_half * 2
+
+        conds_2 = []
+        if pil_image is not None:
+            img_t2 = prepare_image_for_encoding(pil_image, H_full * 32, W_full * 32)
+            ref_lat2 = vae.encoder.encode(img_t2[:, :, None, :, :])
+            conds_2.append(VideoConditionByLatentIndex(frame_indices=[0], clean_latent=ref_lat2.transpose(0, 2, 3, 4, 1).reshape(1, -1, 128), strength=1.0))
+
+        del upsampler
+        vae.unload_encoder()
+
+        # Reload clean transformer (without LoRA)
+        model.unload()
+        model.load()
+
+        video_tokens_up, _ = video_patchifier.patchify(video_upscaled)
+        sigmas_2 = STAGE_2_SIGMAS[: stage2_steps + 1] if stage2_steps < len(STAGE_2_SIGMAS) else STAGE_2_SIGMAS
+        s0 = sigmas_2[0]
+        mx.random.seed(seed + 2)
+        noisy = mx.random.normal(video_tokens_up.shape).astype(mx.bfloat16) * s0 + video_tokens_up * (1.0 - s0)
+
+        vs2 = LatentState(latent=noisy, clean_latent=video_tokens_up,
+                          denoise_mask=mx.ones((1, video_tokens_up.shape[1], 1), dtype=mx.bfloat16),
+                          positions=compute_video_positions(F, H_full, W_full))
+        if conds_2:
+            vs2 = apply_conditioning(vs2, conds_2, (F, H_full, W_full))
+
+        at1 = output_1.audio_latent
+        as2 = LatentState(latent=at1, clean_latent=at1,
+                          denoise_mask=mx.ones((1, at1.shape[1], 1), dtype=at1.dtype), positions=audio_positions)
+        as2 = noise_latent_state(as2, sigma=s0, seed=seed + 2)
+
+        output_2 = denoise_loop(
+            model=X0Model(model.transformer), video_state=vs2, audio_state=as2,
+            video_text_embeds=video_embeds, audio_text_embeds=audio_embeds, sigmas=sigmas_2,
+        )
+        model.unload()
+
+        video_latent = video_patchifier.unpatchify(output_2.video_latent, (F, H_full, W_full))
+        audio_latent = audio_patchifier.unpatchify(output_2.audio_latent)
+
+        vae.load_decoders()
+        video_frames = vae.decoder.decode(video_latent)
+        _materialize(video_frames)
+        aggressive_cleanup()
+        mel = vae.audio_decoder.decode(audio_latent)
+        waveform = vae.vocoder(mel)
+        _materialize(waveform)
+        aggressive_cleanup()
+
+        return (mx_video_frames_to_torch(video_frames), mx_audio_to_torch(waveform, sample_rate=48000))
