@@ -53,8 +53,14 @@ class LTXVMLXTextEncode:
     CATEGORY = "Lightricks/MLX"
 
     def encode(self, text_encoder: dict, prompt: str, negative_prompt: str = ""):
-        gemma = text_encoder["gemma"]
-        feature_extractor = text_encoder["feature_extractor"]
+        gemma = text_encoder.get("gemma")
+        feature_extractor = text_encoder.get("feature_extractor")
+        if gemma is None or feature_extractor is None:
+            raise RuntimeError(
+                "LTXVMLXTextEncode received an already-freed text_encoder. The "
+                "encoder is freed after each encode call to release ~6GB of Metal "
+                "memory before the DiT loads. Re-run the workflow to reload Gemma."
+            )
 
         # Encode positive prompt
         all_hidden_states, attention_mask = gemma.encode_all_layers(prompt)
@@ -67,11 +73,25 @@ class LTXVMLXTextEncode:
             neg_hidden, neg_mask = gemma.encode_all_layers(negative_prompt)
             neg_video_embeds, neg_audio_embeds = feature_extractor(neg_hidden, attention_mask=neg_mask)
 
-        # Force evaluation of the lazy computation graph
+        # Force evaluation of the lazy computation graph so embeddings are
+        # materialized BEFORE we release Gemma (otherwise lazy ops would
+        # follow weight references that are about to be freed).
         arrays_to_eval = [video_embeds, audio_embeds]
         if neg_video_embeds is not None:
             arrays_to_eval.extend([neg_video_embeds, neg_audio_embeds])
         _evaluate_arrays(*arrays_to_eval)
+
+        # Free the text encoder now that embeddings are computed. Mirrors
+        # ltx-2-mlx's pipeline low_memory mode: Gemma (~6GB at q4) is no longer
+        # needed for the rest of the workflow, and freeing it before the DiT
+        # loads is the difference between OOM and successful generation on
+        # 32GB Macs (especially with the HQ res_2s sampler).
+        from ltx_core_mlx.utils.memory import aggressive_cleanup
+
+        text_encoder["gemma"] = None
+        text_encoder["feature_extractor"] = None
+        del gemma, feature_extractor
+        aggressive_cleanup()
 
         conditioning = {
             "video_embeds": video_embeds,

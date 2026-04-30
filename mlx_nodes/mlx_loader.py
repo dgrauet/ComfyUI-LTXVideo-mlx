@@ -220,6 +220,16 @@ class LTXVMLXTextEncoderLoader:
     FUNCTION = "load_encoder"
     CATEGORY = "Lightricks/MLX"
 
+    @classmethod
+    def IS_CHANGED(cls, *args, **kwargs):
+        # The downstream LTXVMLXTextEncode node frees the encoder dict's inner
+        # references after producing embeddings (low-VRAM behavior, mirrors the
+        # ltx-2-mlx pipeline's low_memory mode). That mutation invalidates any
+        # framework-level cached output, so we always force re-execution. Cost:
+        # one Gemma re-load (~10s on a fast SSD) per Queue. Benefit: ~6GB freed
+        # before the DiT loads, avoiding OOM on 32GB Macs running HQ.
+        return float("nan")
+
     def load_encoder(self, model_dir: str, gemma_model_id: str = "mlx-community/gemma-3-12b-it-4bit", force_reload: bool = False):
         from ltx_core_mlx.text_encoders.gemma.encoders.base_encoder import GemmaLanguageModel
         from ltx_core_mlx.text_encoders.gemma.feature_extractor import GemmaFeaturesExtractorV2
