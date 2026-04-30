@@ -219,6 +219,8 @@ class LTXVMLXTwoStageSampler:
                 "dev_transformer": ("STRING", {"default": "transformer-dev.safetensors"}),
                 "distilled_lora": ("STRING", {"default": "ltx-2.3-22b-distilled-lora-384.safetensors"}),
                 "distilled_lora_strength": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.05}),
+                "enable_teacache": ("BOOLEAN", {"default": False}),
+                "teacache_thresh": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 2.0, "step": 0.05}),
             },
         }
 
@@ -243,6 +245,8 @@ class LTXVMLXTwoStageSampler:
         dev_transformer: str = "transformer-dev.safetensors",
         distilled_lora: str = "ltx-2.3-22b-distilled-lora-384.safetensors",
         distilled_lora_strength: float = 1.0,
+        enable_teacache: bool = False,
+        teacache_thresh: float = 0.5,
     ):
         import json
 
@@ -363,6 +367,17 @@ class LTXVMLXTwoStageSampler:
         video_factory = create_multimodal_guider_factory(video_params, negative_context=neg_video_embeds)
         audio_factory = create_multimodal_guider_factory(audio_params, negative_context=neg_audio_embeds)
 
+        teacache_controller = None
+        if enable_teacache:
+            from mlx_arsenal.diffusion import TeaCacheController
+            from ltx_pipelines_mlx.ti2vid_two_stages import LTX2_TEACACHE_COEFFICIENTS
+            teacache_controller = TeaCacheController(
+                num_steps=stage1_steps,
+                rel_l1_thresh=teacache_thresh,
+                coefficients=LTX2_TEACACHE_COEFFICIENTS,
+            )
+            teacache_controller.reset()
+
         output_1 = guided_denoise_loop(
             model=x0_model,
             video_state=video_state,
@@ -372,6 +387,7 @@ class LTXVMLXTwoStageSampler:
             video_guider_factory=video_factory,
             audio_guider_factory=audio_factory,
             sigmas=sigmas_1,
+            teacache=teacache_controller,
         )
         aggressive_cleanup()
 
