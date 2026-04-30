@@ -97,7 +97,7 @@
         {"name": "audio", "type": "AUDIO", "links": [9], "slot_index": 1}
       ],
       "properties": {"Node name for S&R": "LTXVMLXTwoStageSampler"},
-      "widgets_values": [704, 480, 97, 42, 30, 3, "transformer-dev.safetensors", "ltx-2.3-22b-distilled-lora-384.safetensors", 1.0]
+      "widgets_values": [704, 480, 97, 42, 30, 3, "transformer-dev.safetensors", "ltx-2.3-22b-distilled-lora-384-1.1.safetensors", 1.0]
     },
     {
       "id": 7,

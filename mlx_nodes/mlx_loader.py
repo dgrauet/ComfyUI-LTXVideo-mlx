@@ -63,9 +63,14 @@ class LazyMLXModel:
         from ltx_core_mlx.utils.weights import apply_quantization, load_split_safetensors
 
         self.transformer = LTXModel()
-        transformer_path = self.model_dir / "transformer.safetensors"
-        if not transformer_path.exists():
-            transformer_path = self.model_dir / "transformer-distilled.safetensors"
+        for candidate in (
+            "transformer.safetensors",
+            "transformer-distilled-1.1.safetensors",
+            "transformer-distilled.safetensors",
+        ):
+            transformer_path = self.model_dir / candidate
+            if transformer_path.exists():
+                break
         weights = load_split_safetensors(transformer_path, prefix="transformer.")
         apply_quantization(self.transformer, weights)
         self.transformer.load_weights(list(weights.items()))

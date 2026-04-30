@@ -257,7 +257,7 @@
         15,
         3,
         "transformer-dev.safetensors",
-        "ltx-2.3-22b-distilled-lora-384.safetensors",
+        "ltx-2.3-22b-distilled-lora-384-1.1.safetensors",
         1.0,
         true,
         1.0
