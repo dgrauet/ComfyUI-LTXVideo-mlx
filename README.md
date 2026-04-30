@@ -35,6 +35,18 @@ pip install -r requirements.txt --upgrade
 Versions of `ltx-2-mlx` are documented at https://github.com/dgrauet/ltx-2-mlx/releases.
 
 
+## MLX Samplers — Two-Stage modes
+
+Two two-stage samplers are available on Apple Silicon:
+
+| Node | Backend | Default steps | TeaCache thresh (default off) |
+|------|---------|---------------|-------------------------------|
+| 🍎 MLX Two-Stage Sampler | Euler + CFG | 30 + 3 | 0.5 → 1.46× speedup |
+| 🍎 MLX Two-Stage HQ Sampler | res_2s + CFG | 15 + 3 | 1.0 → 1.78× speedup |
+
+The HQ variant uses a second-order sampler with stronger temporal consistency. TeaCache is opt-in (caches stage 1 transformer activations across timesteps) — enable it on the sampler node to activate. See `example_workflows/mlx/MLX_T2V_I2V_Two_Stage_HQ.json` for a ready-made HQ + TeaCache workflow.
+
+
 ## Quick Start 🚀
 
 We recommend using the LTX-2 workflows available in Comfy Manager.
