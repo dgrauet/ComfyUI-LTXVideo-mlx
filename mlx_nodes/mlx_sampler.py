@@ -196,8 +196,320 @@ class LTXVMLXBaseSampler:
         return (video_torch, audio_torch)
 
 
+def _run_two_stage_pipeline(
+    *,
+    hq: bool,
+    model: dict,
+    conditioning: dict,
+    vae,
+    width: int,
+    height: int,
+    num_frames: int,
+    seed: int,
+    stage1_steps: int,
+    stage2_steps: int,
+    image,
+    guider_config: dict | None,
+    dev_transformer: str,
+    distilled_lora: str,
+    distilled_lora_strength: float,
+    enable_teacache: bool,
+    teacache_thresh: float,
+):
+    """Shared body for two-stage MLX sampling.
+
+    When ``hq=True``, stage 1 uses ``res2s_denoise_loop`` (second-order
+    res_2s sampler) with ``LTX2_HQ_TEACACHE_COEFFICIENTS``; otherwise
+    stage 1 uses ``guided_denoise_loop`` (Euler) with
+    ``LTX2_TEACACHE_COEFFICIENTS``. Stage 2 (distilled-LoRA refine) is
+    identical in both modes.
+    """
+    import json
+
+    from ltx_core_mlx.components.guiders import (
+        MultiModalGuiderParams,
+        create_multimodal_guider_factory,
+    )
+    from ltx_core_mlx.components.patchifiers import (
+        AudioPatchifier,
+        VideoLatentPatchifier,
+        compute_video_latent_shape,
+    )
+    from ltx_core_mlx.conditioning.types.latent_cond import (
+        LatentState,
+        VideoConditionByLatentIndex,
+        apply_conditioning,
+        create_initial_state,
+        noise_latent_state,
+    )
+    from ltx_core_mlx.loader.fuse_loras import apply_loras
+    from ltx_core_mlx.loader.primitives import LoraStateDictWithStrength, StateDict
+    from ltx_core_mlx.loader.sd_ops import LTXV_LORA_COMFY_RENAMING_MAP
+    from ltx_core_mlx.model.transformer.model import LTXModel, X0Model
+    from ltx_core_mlx.model.upsampler import LatentUpsampler
+    from ltx_core_mlx.utils.image import prepare_image_for_encoding
+    from ltx_core_mlx.utils.memory import aggressive_cleanup
+    from ltx_core_mlx.utils.positions import (
+        compute_audio_positions,
+        compute_audio_token_count,
+        compute_video_positions,
+    )
+    from ltx_core_mlx.utils.weights import apply_quantization, load_split_safetensors
+    from ltx_pipelines_mlx.scheduler import STAGE_2_SIGMAS, ltx2_schedule
+    from ltx_pipelines_mlx.utils.samplers import denoise_loop, guided_denoise_loop, res2s_denoise_loop
+
+    from .mlx_utils import mx_audio_to_torch, mx_video_frames_to_torch, torch_image_to_pil
+
+    model_dir = model.model_dir
+    video_embeds = conditioning["video_embeds"]
+    audio_embeds = conditioning["audio_embeds"]
+    neg_video_embeds = conditioning.get("neg_video_embeds")
+    neg_audio_embeds = conditioning.get("neg_audio_embeds")
+
+    video_patchifier = VideoLatentPatchifier()
+    audio_patchifier = AudioPatchifier()
+
+    # --- Load VAE encoder (needed for I2V + denorm/renorm) ---
+    vae.load_encoder()
+
+    # --- Load dev transformer ---
+    dev_path = model_dir / dev_transformer
+    dit = LTXModel()
+    weights = load_split_safetensors(dev_path, prefix="transformer.")
+    apply_quantization(dit, weights)
+    dit.load_weights(list(weights.items()))
+    aggressive_cleanup()
+
+    # --- Load upsampler ---
+    upsampler_name = "spatial_upscaler_x2_v1_1"
+    config_path = model_dir / f"{upsampler_name}_config.json"
+    weights_path = model_dir / f"{upsampler_name}.safetensors"
+    if config_path.exists():
+        config = json.loads(config_path.read_text()).get("config", {})
+        upsampler = LatentUpsampler.from_config(config)
+    else:
+        upsampler = LatentUpsampler()
+    if weights_path.exists():
+        up_weights = load_split_safetensors(weights_path, prefix=f"{upsampler_name}.")
+        upsampler.load_weights(list(up_weights.items()))
+    aggressive_cleanup()
+
+    # --- Stage 1: Half resolution with CFG ---
+    half_h, half_w = height // 2, width // 2
+    F, H_half, W_half = compute_video_latent_shape(num_frames, half_h, half_w)
+    video_shape = (1, F * H_half * W_half, 128)
+    audio_T = compute_audio_token_count(num_frames)
+    audio_shape = (1, audio_T, 128)
+
+    video_positions_1 = compute_video_positions(F, H_half, W_half)
+    audio_positions = compute_audio_positions(audio_T)
+
+    video_state = create_initial_state(video_shape, seed, positions=video_positions_1)
+    audio_state = create_initial_state(audio_shape, seed + 1, positions=audio_positions)
+
+    # I2V conditioning at half resolution
+    pil_image = None
+    if image is not None:
+        pil_image = torch_image_to_pil(image)
+        enc_h = H_half * 32
+        enc_w = W_half * 32
+        img_tensor = prepare_image_for_encoding(pil_image, enc_h, enc_w)
+        ref_latent = vae.encoder.encode(img_tensor[:, :, None, :, :])
+        ref_tokens = ref_latent.transpose(0, 2, 3, 4, 1).reshape(1, -1, 128)
+        condition = VideoConditionByLatentIndex(frame_indices=[0], clean_latent=ref_tokens, strength=1.0)
+        video_state = apply_conditioning(video_state, [condition], (F, H_half, W_half))
+        video_state = noise_latent_state(video_state, sigma=1.0, seed=seed)
+        audio_state = noise_latent_state(audio_state, sigma=1.0, seed=seed + 1)
+
+    # Stage 1 sigma schedule
+    num_tokens = F * H_half * W_half
+    sigmas_1 = ltx2_schedule(stage1_steps, num_tokens=num_tokens)
+    x0_model = X0Model(dit)
+
+    # Build guider
+    if guider_config is not None:
+        video_params = guider_config["video_params"]
+        audio_params = guider_config["audio_params"]
+    else:
+        video_params = MultiModalGuiderParams(
+            cfg_scale=3.0, stg_scale=0.0, rescale_scale=0.7,
+            modality_scale=3.0, stg_blocks=[28],
+        )
+        audio_params = MultiModalGuiderParams(
+            cfg_scale=7.0, stg_scale=0.0, rescale_scale=0.7,
+            modality_scale=3.0, stg_blocks=[28],
+        )
+
+    video_factory = create_multimodal_guider_factory(video_params, negative_context=neg_video_embeds)
+    audio_factory = create_multimodal_guider_factory(audio_params, negative_context=neg_audio_embeds)
+
+    # --- TeaCache controller (mode-specific coefficients) ---
+    teacache_controller = None
+    if enable_teacache:
+        from mlx_arsenal.diffusion import TeaCacheController
+
+        if hq:
+            from ltx_pipelines_mlx.ti2vid_two_stages_hq import LTX2_HQ_TEACACHE_COEFFICIENTS as _COEFFS
+        else:
+            from ltx_pipelines_mlx.ti2vid_two_stages import LTX2_TEACACHE_COEFFICIENTS as _COEFFS
+        teacache_controller = TeaCacheController(
+            num_steps=stage1_steps,
+            rel_l1_thresh=teacache_thresh,
+            coefficients=_COEFFS,
+        )
+        teacache_controller.reset()
+
+    # --- Stage 1: dispatch to Euler or res_2s ---
+    if hq:
+        output_1 = res2s_denoise_loop(
+            model=x0_model,
+            video_state=video_state,
+            audio_state=audio_state,
+            video_text_embeds=video_embeds,
+            audio_text_embeds=audio_embeds,
+            video_guider_factory=video_factory,
+            audio_guider_factory=audio_factory,
+            sigmas=sigmas_1,
+            teacache=teacache_controller,
+        )
+    else:
+        output_1 = guided_denoise_loop(
+            model=x0_model,
+            video_state=video_state,
+            audio_state=audio_state,
+            video_text_embeds=video_embeds,
+            audio_text_embeds=audio_embeds,
+            video_guider_factory=video_factory,
+            audio_guider_factory=audio_factory,
+            sigmas=sigmas_1,
+            teacache=teacache_controller,
+        )
+    aggressive_cleanup()
+
+    # --- Fuse distilled LoRA ---
+    def _remap_lora_keys(lora_sd):
+        remapped = {}
+        for key, value in lora_sd.items():
+            new_key = LTXV_LORA_COMFY_RENAMING_MAP.apply_to_key(key)
+            new_key = new_key.replace(".linear_1.", ".linear1.").replace(".linear_2.", ".linear2.")
+            new_key = new_key.replace("audio_ff.net.0.proj.", "audio_ff.proj_in.")
+            new_key = new_key.replace("audio_ff.net.2.", "audio_ff.proj_out.")
+            remapped[new_key] = value
+        return remapped
+
+    lora_path = model_dir / distilled_lora
+    if lora_path.exists():
+        import mlx.utils
+
+        lora_raw = dict(mx.load(str(lora_path)))
+        lora_remapped = _remap_lora_keys(lora_raw)
+        flat_params = mlx.utils.tree_flatten(dit.parameters())
+        flat_model = {k: v for k, v in flat_params if isinstance(v, mx.array)}
+        model_sd = StateDict(sd=flat_model, size=0, dtype=set())
+        lora_sd = StateDict(sd=lora_remapped, size=0, dtype=set())
+        lora_with_strength = LoraStateDictWithStrength(lora_sd, distilled_lora_strength)
+        fused = apply_loras(model_sd, [lora_with_strength])
+        dit.load_weights(list(fused.sd.items()))
+        aggressive_cleanup()
+
+    # --- Upscale ---
+    video_half = video_patchifier.unpatchify(output_1.video_latent, (F, H_half, W_half))
+    video_mlx = video_half.transpose(0, 2, 3, 4, 1)
+    video_denorm = vae.encoder.denormalize_latent(video_mlx)
+    video_denorm = video_denorm.transpose(0, 4, 1, 2, 3)
+    video_upscaled = upsampler(video_denorm)
+    video_up_mlx = video_upscaled.transpose(0, 2, 3, 4, 1)
+    video_upscaled = vae.encoder.normalize_latent(video_up_mlx)
+    video_upscaled = video_upscaled.transpose(0, 4, 1, 2, 3)
+    _materialize(video_upscaled)
+
+    H_full = H_half * 2
+    W_full = W_half * 2
+
+    # I2V conditioning at full resolution for Stage 2
+    conditionings_2 = []
+    if pil_image is not None:
+        enc_h_full = H_full * 32
+        enc_w_full = W_full * 32
+        img_tensor = prepare_image_for_encoding(pil_image, enc_h_full, enc_w_full)
+        ref_latent = vae.encoder.encode(img_tensor[:, :, None, :, :])
+        ref_tokens = ref_latent.transpose(0, 2, 3, 4, 1).reshape(1, -1, 128)
+        conditionings_2.append(VideoConditionByLatentIndex(frame_indices=[0], clean_latent=ref_tokens, strength=1.0))
+
+    # Free upsampler
+    del upsampler
+    aggressive_cleanup()
+
+    # --- Stage 2: Refine at full resolution ---
+    video_tokens, _ = video_patchifier.patchify(video_upscaled)
+    sigmas_2 = STAGE_2_SIGMAS[: stage2_steps + 1] if stage2_steps < len(STAGE_2_SIGMAS) else STAGE_2_SIGMAS
+    start_sigma = sigmas_2[0]
+
+    mx.random.seed(seed + 2)
+    noise = mx.random.normal(video_tokens.shape).astype(mx.bfloat16)
+    noisy_tokens = noise * start_sigma + video_tokens * (1.0 - start_sigma)
+
+    video_positions_2 = compute_video_positions(F, H_full, W_full)
+
+    video_state_2 = LatentState(
+        latent=noisy_tokens,
+        clean_latent=video_tokens,
+        denoise_mask=mx.ones((1, video_tokens.shape[1], 1), dtype=mx.bfloat16),
+        positions=video_positions_2,
+    )
+
+    if conditionings_2:
+        video_state_2 = apply_conditioning(video_state_2, conditionings_2, (F, H_full, W_full))
+
+    audio_tokens_1 = output_1.audio_latent
+    audio_state_2 = LatentState(
+        latent=audio_tokens_1,
+        clean_latent=audio_tokens_1,
+        denoise_mask=mx.ones((1, audio_tokens_1.shape[1], 1), dtype=audio_tokens_1.dtype),
+        positions=audio_positions,
+    )
+    audio_state_2 = noise_latent_state(audio_state_2, sigma=start_sigma, seed=seed + 2)
+
+    output_2 = denoise_loop(
+        model=x0_model,
+        video_state=video_state_2,
+        audio_state=audio_state_2,
+        video_text_embeds=video_embeds,
+        audio_text_embeds=audio_embeds,
+        sigmas=sigmas_2,
+    )
+    aggressive_cleanup()
+
+    # Free transformer + VAE encoder before loading decoders
+    del dit
+    vae.unload_encoder()
+    aggressive_cleanup()
+
+    # Unpatchify
+    video_latent = video_patchifier.unpatchify(output_2.video_latent, (F, H_full, W_full))
+    audio_latent = audio_patchifier.unpatchify(output_2.audio_latent)
+
+    # Decode video
+    vae.load_decoders()
+    video_frames = vae.decoder.decode(video_latent)
+    _materialize(video_frames)
+    aggressive_cleanup()
+
+    # Decode audio
+    mel = vae.audio_decoder.decode(audio_latent)
+    waveform = vae.vocoder(mel)
+    _materialize(waveform)
+    aggressive_cleanup()
+
+    # Convert to ComfyUI formats
+    video_torch = mx_video_frames_to_torch(video_frames)
+    audio_torch = mx_audio_to_torch(waveform, sample_rate=48000)
+
+    return (video_torch, audio_torch)
+
+
 class LTXVMLXTwoStageSampler:
-    """Two-stage MLX sampling: CFG at half-res, upscale, distilled LoRA refine."""
+    """Two-stage MLX sampling: Euler stage 1 + CFG, distilled-LoRA stage 2 refine."""
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -233,7 +545,7 @@ class LTXVMLXTwoStageSampler:
         self,
         model: dict,
         conditioning: dict,
-        vae: dict,
+        vae,
         width: int = 704,
         height: int = 480,
         num_frames: int = 97,
@@ -248,269 +560,98 @@ class LTXVMLXTwoStageSampler:
         enable_teacache: bool = False,
         teacache_thresh: float = 0.5,
     ):
-        import json
-
-        from ltx_core_mlx.components.guiders import (
-            MultiModalGuiderParams,
-            create_multimodal_guider_factory,
-        )
-        from ltx_core_mlx.components.patchifiers import (
-            AudioPatchifier,
-            VideoLatentPatchifier,
-            compute_video_latent_shape,
-        )
-        from ltx_core_mlx.conditioning.types.latent_cond import (
-            LatentState,
-            VideoConditionByLatentIndex,
-            apply_conditioning,
-            create_initial_state,
-            noise_latent_state,
-        )
-        from ltx_core_mlx.loader.fuse_loras import apply_loras
-        from ltx_core_mlx.loader.primitives import LoraStateDictWithStrength, StateDict
-        from ltx_core_mlx.loader.sd_ops import LTXV_LORA_COMFY_RENAMING_MAP
-        from ltx_core_mlx.model.transformer.model import LTXModel, X0Model
-        from ltx_core_mlx.model.upsampler import LatentUpsampler
-        from ltx_core_mlx.utils.image import prepare_image_for_encoding
-        from ltx_core_mlx.utils.memory import aggressive_cleanup
-        from ltx_core_mlx.utils.positions import (
-            compute_audio_positions,
-            compute_audio_token_count,
-            compute_video_positions,
-        )
-        from ltx_core_mlx.utils.weights import apply_quantization, load_split_safetensors
-        from ltx_pipelines_mlx.scheduler import STAGE_2_SIGMAS, ltx2_schedule
-        from ltx_pipelines_mlx.utils.samplers import denoise_loop, guided_denoise_loop
-
-        from .mlx_utils import mx_audio_to_torch, mx_video_frames_to_torch, torch_image_to_pil
-
-        model_dir = model.model_dir
-        video_embeds = conditioning["video_embeds"]
-        audio_embeds = conditioning["audio_embeds"]
-        neg_video_embeds = conditioning.get("neg_video_embeds")
-        neg_audio_embeds = conditioning.get("neg_audio_embeds")
-
-        video_patchifier = VideoLatentPatchifier()
-        audio_patchifier = AudioPatchifier()
-
-        # --- Load VAE encoder (needed for I2V + denorm/renorm) ---
-        vae.load_encoder()
-
-        # --- Load dev transformer ---
-        dev_path = model_dir / dev_transformer
-        dit = LTXModel()
-        weights = load_split_safetensors(dev_path, prefix="transformer.")
-        apply_quantization(dit, weights)
-        dit.load_weights(list(weights.items()))
-        aggressive_cleanup()
-
-        # --- Load upsampler ---
-        upsampler_name = "spatial_upscaler_x2_v1_1"
-        config_path = model_dir / f"{upsampler_name}_config.json"
-        weights_path = model_dir / f"{upsampler_name}.safetensors"
-        if config_path.exists():
-            config = json.loads(config_path.read_text()).get("config", {})
-            upsampler = LatentUpsampler.from_config(config)
-        else:
-            upsampler = LatentUpsampler()
-        if weights_path.exists():
-            up_weights = load_split_safetensors(weights_path, prefix=f"{upsampler_name}.")
-            upsampler.load_weights(list(up_weights.items()))
-        aggressive_cleanup()
-
-        # --- Stage 1: Half resolution with CFG ---
-        half_h, half_w = height // 2, width // 2
-        F, H_half, W_half = compute_video_latent_shape(num_frames, half_h, half_w)
-        video_shape = (1, F * H_half * W_half, 128)
-        audio_T = compute_audio_token_count(num_frames)
-        audio_shape = (1, audio_T, 128)
-
-        video_positions_1 = compute_video_positions(F, H_half, W_half)
-        audio_positions = compute_audio_positions(audio_T)
-
-        video_state = create_initial_state(video_shape, seed, positions=video_positions_1)
-        audio_state = create_initial_state(audio_shape, seed + 1, positions=audio_positions)
-
-        # I2V conditioning at half resolution
-        pil_image = None
-        if image is not None:
-            pil_image = torch_image_to_pil(image)
-            enc_h = H_half * 32
-            enc_w = W_half * 32
-            img_tensor = prepare_image_for_encoding(pil_image, enc_h, enc_w)
-            ref_latent = vae.encoder.encode(img_tensor[:, :, None, :, :])
-            ref_tokens = ref_latent.transpose(0, 2, 3, 4, 1).reshape(1, -1, 128)
-            condition = VideoConditionByLatentIndex(frame_indices=[0], clean_latent=ref_tokens, strength=1.0)
-            video_state = apply_conditioning(video_state, [condition], (F, H_half, W_half))
-            video_state = noise_latent_state(video_state, sigma=1.0, seed=seed)
-            audio_state = noise_latent_state(audio_state, sigma=1.0, seed=seed + 1)
-
-        # Stage 1 sigma schedule
-        num_tokens = F * H_half * W_half
-        sigmas_1 = ltx2_schedule(stage1_steps, num_tokens=num_tokens)
-        x0_model = X0Model(dit)
-
-        # Build guider
-        if guider_config is not None:
-            video_params = guider_config["video_params"]
-            audio_params = guider_config["audio_params"]
-        else:
-            video_params = MultiModalGuiderParams(
-                cfg_scale=3.0, stg_scale=0.0, rescale_scale=0.7,
-                modality_scale=3.0, stg_blocks=[28],
-            )
-            audio_params = MultiModalGuiderParams(
-                cfg_scale=7.0, stg_scale=0.0, rescale_scale=0.7,
-                modality_scale=3.0, stg_blocks=[28],
-            )
-
-        video_factory = create_multimodal_guider_factory(video_params, negative_context=neg_video_embeds)
-        audio_factory = create_multimodal_guider_factory(audio_params, negative_context=neg_audio_embeds)
-
-        teacache_controller = None
-        if enable_teacache:
-            from mlx_arsenal.diffusion import TeaCacheController
-            from ltx_pipelines_mlx.ti2vid_two_stages import LTX2_TEACACHE_COEFFICIENTS
-            teacache_controller = TeaCacheController(
-                num_steps=stage1_steps,
-                rel_l1_thresh=teacache_thresh,
-                coefficients=LTX2_TEACACHE_COEFFICIENTS,
-            )
-            teacache_controller.reset()
-
-        output_1 = guided_denoise_loop(
-            model=x0_model,
-            video_state=video_state,
-            audio_state=audio_state,
-            video_text_embeds=video_embeds,
-            audio_text_embeds=audio_embeds,
-            video_guider_factory=video_factory,
-            audio_guider_factory=audio_factory,
-            sigmas=sigmas_1,
-            teacache=teacache_controller,
-        )
-        aggressive_cleanup()
-
-        # --- Fuse distilled LoRA ---
-        def _remap_lora_keys(lora_sd):
-            remapped = {}
-            for key, value in lora_sd.items():
-                new_key = LTXV_LORA_COMFY_RENAMING_MAP.apply_to_key(key)
-                new_key = new_key.replace(".linear_1.", ".linear1.").replace(".linear_2.", ".linear2.")
-                new_key = new_key.replace("audio_ff.net.0.proj.", "audio_ff.proj_in.")
-                new_key = new_key.replace("audio_ff.net.2.", "audio_ff.proj_out.")
-                remapped[new_key] = value
-            return remapped
-
-        lora_path = model_dir / distilled_lora
-        if lora_path.exists():
-            import mlx.utils
-
-            lora_raw = dict(mx.load(str(lora_path)))
-            lora_remapped = _remap_lora_keys(lora_raw)
-            flat_params = mlx.utils.tree_flatten(dit.parameters())
-            flat_model = {k: v for k, v in flat_params if isinstance(v, mx.array)}
-            model_sd = StateDict(sd=flat_model, size=0, dtype=set())
-            lora_sd = StateDict(sd=lora_remapped, size=0, dtype=set())
-            lora_with_strength = LoraStateDictWithStrength(lora_sd, distilled_lora_strength)
-            fused = apply_loras(model_sd, [lora_with_strength])
-            dit.load_weights(list(fused.sd.items()))
-            aggressive_cleanup()
-
-        # --- Upscale ---
-        video_half = video_patchifier.unpatchify(output_1.video_latent, (F, H_half, W_half))
-        video_mlx = video_half.transpose(0, 2, 3, 4, 1)
-        video_denorm = vae.encoder.denormalize_latent(video_mlx)
-        video_denorm = video_denorm.transpose(0, 4, 1, 2, 3)
-        video_upscaled = upsampler(video_denorm)
-        video_up_mlx = video_upscaled.transpose(0, 2, 3, 4, 1)
-        video_upscaled = vae.encoder.normalize_latent(video_up_mlx)
-        video_upscaled = video_upscaled.transpose(0, 4, 1, 2, 3)
-        _materialize(video_upscaled)
-
-        H_full = H_half * 2
-        W_full = W_half * 2
-
-        # I2V conditioning at full resolution for Stage 2
-        conditionings_2 = []
-        if pil_image is not None:
-            enc_h_full = H_full * 32
-            enc_w_full = W_full * 32
-            img_tensor = prepare_image_for_encoding(pil_image, enc_h_full, enc_w_full)
-            ref_latent = vae.encoder.encode(img_tensor[:, :, None, :, :])
-            ref_tokens = ref_latent.transpose(0, 2, 3, 4, 1).reshape(1, -1, 128)
-            conditionings_2.append(VideoConditionByLatentIndex(frame_indices=[0], clean_latent=ref_tokens, strength=1.0))
-
-        # Free upsampler
-        del upsampler
-        aggressive_cleanup()
-
-        # --- Stage 2: Refine at full resolution ---
-        video_tokens, _ = video_patchifier.patchify(video_upscaled)
-        sigmas_2 = STAGE_2_SIGMAS[: stage2_steps + 1] if stage2_steps < len(STAGE_2_SIGMAS) else STAGE_2_SIGMAS
-        start_sigma = sigmas_2[0]
-
-        mx.random.seed(seed + 2)
-        noise = mx.random.normal(video_tokens.shape).astype(mx.bfloat16)
-        noisy_tokens = noise * start_sigma + video_tokens * (1.0 - start_sigma)
-
-        video_positions_2 = compute_video_positions(F, H_full, W_full)
-
-        video_state_2 = LatentState(
-            latent=noisy_tokens,
-            clean_latent=video_tokens,
-            denoise_mask=mx.ones((1, video_tokens.shape[1], 1), dtype=mx.bfloat16),
-            positions=video_positions_2,
+        return _run_two_stage_pipeline(
+            hq=False,
+            model=model,
+            conditioning=conditioning,
+            vae=vae,
+            width=width,
+            height=height,
+            num_frames=num_frames,
+            seed=seed,
+            stage1_steps=stage1_steps,
+            stage2_steps=stage2_steps,
+            image=image,
+            guider_config=guider_config,
+            dev_transformer=dev_transformer,
+            distilled_lora=distilled_lora,
+            distilled_lora_strength=distilled_lora_strength,
+            enable_teacache=enable_teacache,
+            teacache_thresh=teacache_thresh,
         )
 
-        if conditionings_2:
-            video_state_2 = apply_conditioning(video_state_2, conditionings_2, (F, H_full, W_full))
 
-        audio_tokens_1 = output_1.audio_latent
-        audio_state_2 = LatentState(
-            latent=audio_tokens_1,
-            clean_latent=audio_tokens_1,
-            denoise_mask=mx.ones((1, audio_tokens_1.shape[1], 1), dtype=audio_tokens_1.dtype),
-            positions=audio_positions,
+class LTXVMLXTwoStageHQSampler:
+    """Two-stage MLX sampling with HQ stage 1 (res_2s second-order sampler)."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "model": ("LTXV_MLX_MODEL",),
+                "conditioning": ("LTXV_MLX_CONDITIONING",),
+                "vae": ("LTXV_MLX_VAE",),
+                "width": ("INT", {"default": 704, "min": 64, "max": 2048, "step": 32}),
+                "height": ("INT", {"default": 480, "min": 64, "max": 2048, "step": 32}),
+                "num_frames": ("INT", {"default": 97, "min": 1, "max": 257, "step": 8}),
+                "seed": ("INT", {"default": 42, "min": 0, "max": 2**31 - 1}),
+                "stage1_steps": ("INT", {"default": 15, "min": 1, "max": 100}),
+            },
+            "optional": {
+                "stage2_steps": ("INT", {"default": 3, "min": 1, "max": 100}),
+                "image": ("IMAGE",),
+                "guider_config": ("LTXV_MLX_GUIDER_CONFIG",),
+                "dev_transformer": ("STRING", {"default": "transformer-dev.safetensors"}),
+                "distilled_lora": ("STRING", {"default": "ltx-2.3-22b-distilled-lora-384.safetensors"}),
+                "distilled_lora_strength": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.05}),
+                "enable_teacache": ("BOOLEAN", {"default": False}),
+                "teacache_thresh": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.05}),
+            },
+        }
+
+    RETURN_TYPES = ("IMAGE", "AUDIO")
+    RETURN_NAMES = ("video_frames", "audio")
+    FUNCTION = "sample"
+    CATEGORY = "Lightricks/MLX"
+
+    def sample(
+        self,
+        model: dict,
+        conditioning: dict,
+        vae,
+        width: int = 704,
+        height: int = 480,
+        num_frames: int = 97,
+        seed: int = 42,
+        stage1_steps: int = 15,
+        stage2_steps: int = 3,
+        image=None,
+        guider_config: dict | None = None,
+        dev_transformer: str = "transformer-dev.safetensors",
+        distilled_lora: str = "ltx-2.3-22b-distilled-lora-384.safetensors",
+        distilled_lora_strength: float = 1.0,
+        enable_teacache: bool = False,
+        teacache_thresh: float = 1.0,
+    ):
+        return _run_two_stage_pipeline(
+            hq=True,
+            model=model,
+            conditioning=conditioning,
+            vae=vae,
+            width=width,
+            height=height,
+            num_frames=num_frames,
+            seed=seed,
+            stage1_steps=stage1_steps,
+            stage2_steps=stage2_steps,
+            image=image,
+            guider_config=guider_config,
+            dev_transformer=dev_transformer,
+            distilled_lora=distilled_lora,
+            distilled_lora_strength=distilled_lora_strength,
+            enable_teacache=enable_teacache,
+            teacache_thresh=teacache_thresh,
         )
-        audio_state_2 = noise_latent_state(audio_state_2, sigma=start_sigma, seed=seed + 2)
-
-        output_2 = denoise_loop(
-            model=x0_model,
-            video_state=video_state_2,
-            audio_state=audio_state_2,
-            video_text_embeds=video_embeds,
-            audio_text_embeds=audio_embeds,
-            sigmas=sigmas_2,
-        )
-        aggressive_cleanup()
-
-        # Free transformer + VAE encoder before loading decoders
-        del dit
-        vae.unload_encoder()
-        aggressive_cleanup()
-
-        # Unpatchify
-        video_latent = video_patchifier.unpatchify(output_2.video_latent, (F, H_full, W_full))
-        audio_latent = audio_patchifier.unpatchify(output_2.audio_latent)
-
-        # Decode video
-        vae.load_decoders()
-        video_frames = vae.decoder.decode(video_latent)
-        _materialize(video_frames)
-        aggressive_cleanup()
-
-        # Decode audio
-        mel = vae.audio_decoder.decode(audio_latent)
-        waveform = vae.vocoder(mel)
-        _materialize(waveform)
-        aggressive_cleanup()
-
-        # Convert to ComfyUI formats
-        video_torch = mx_video_frames_to_torch(video_frames)
-        audio_torch = mx_audio_to_torch(waveform, sample_rate=48000)
-
-        return (video_torch, audio_torch)
 
 
 class LTXVMLXExtendSampler:
