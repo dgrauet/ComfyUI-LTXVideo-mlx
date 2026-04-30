@@ -24,6 +24,17 @@ Before you begin using an LTX-2 workflow in ComfyUI, make sure you have:
 * 100GB+ free disk space for models and cache
 
 
+## Compatibility
+
+This node requires `ltx-2-mlx` `v0.2.0` or any later compatible release. The exact pinned version is declared in `requirements.txt`. To upgrade, edit the `@vX.Y.Z` reference in both ltx git URLs in `requirements.txt` and reinstall:
+
+```bash
+pip install -r requirements.txt --upgrade
+```
+
+Versions of `ltx-2-mlx` are documented at https://github.com/dgrauet/ltx-2-mlx/releases.
+
+
 ## Quick Start 🚀
 
 We recommend using the LTX-2 workflows available in Comfy Manager.
