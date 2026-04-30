@@ -19,7 +19,13 @@ if HAS_MLX:
     from .mlx_guider import LTXVMLXGuiderConfig  # noqa: F401
     from .mlx_latents import LTXVMLXConcatLatents, LTXVMLXSelectLatents  # noqa: F401
     from .mlx_loader import LTXVMLXCheckpointLoader, LTXVMLXTextEncoderLoader  # noqa: F401
-    from .mlx_sampler import LTXVMLXBaseSampler, LTXVMLXExtendSampler, LTXVMLXICLoRASampler, LTXVMLXTwoStageSampler  # noqa: F401
+    from .mlx_sampler import (  # noqa: F401
+        LTXVMLXBaseSampler,
+        LTXVMLXExtendSampler,
+        LTXVMLXICLoRASampler,
+        LTXVMLXTwoStageHQSampler,
+        LTXVMLXTwoStageSampler,
+    )
     from .mlx_vae import LTXVMLXAudioDecode, LTXVMLXVAEDecode, LTXVMLXVAEEncode  # noqa: F401
 
     MLX_PREFIX = "\U0001f34e MLX"
@@ -31,6 +37,7 @@ if HAS_MLX:
         "LTXVMLXGuiderConfig": LTXVMLXGuiderConfig,
         "LTXVMLXBaseSampler": LTXVMLXBaseSampler,
         "LTXVMLXTwoStageSampler": LTXVMLXTwoStageSampler,
+        "LTXVMLXTwoStageHQSampler": LTXVMLXTwoStageHQSampler,
         "LTXVMLXExtendSampler": LTXVMLXExtendSampler,
         "LTXVMLXICLoRASampler": LTXVMLXICLoRASampler,
         "LTXVMLXVAEDecode": LTXVMLXVAEDecode,
@@ -47,6 +54,7 @@ if HAS_MLX:
         "LTXVMLXGuiderConfig": f"{MLX_PREFIX} Guider Config",
         "LTXVMLXBaseSampler": f"{MLX_PREFIX} Base Sampler",
         "LTXVMLXTwoStageSampler": f"{MLX_PREFIX} Two Stage Sampler",
+        "LTXVMLXTwoStageHQSampler": f"{MLX_PREFIX} Two Stage HQ Sampler",
         "LTXVMLXExtendSampler": f"{MLX_PREFIX} Extend Sampler",
         "LTXVMLXICLoRASampler": f"{MLX_PREFIX} IC-LoRA Sampler",
         "LTXVMLXVAEDecode": f"{MLX_PREFIX} VAE Decode",
