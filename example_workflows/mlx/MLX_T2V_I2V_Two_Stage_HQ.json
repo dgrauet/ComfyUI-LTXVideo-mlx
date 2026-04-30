@@ -250,10 +250,11 @@
         "Node name for S&R": "LTXVMLXTwoStageHQSampler"
       },
       "widgets_values": [
-        704,
-        480,
-        97,
+        576,
+        384,
+        65,
         42,
+        "fixed",
         15,
         3,
         "transformer-dev.safetensors",
