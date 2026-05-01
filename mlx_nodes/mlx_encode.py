@@ -58,8 +58,9 @@ class LTXVMLXTextEncode:
         if gemma is None or feature_extractor is None:
             raise RuntimeError(
                 "LTXVMLXTextEncode received an already-freed text_encoder. The "
-                "encoder is freed after each encode call to release ~6GB of Metal "
-                "memory before the DiT loads. Re-run the workflow to reload Gemma."
+                "encoder is freed in low_vram mode after each encode call. "
+                "Re-run the workflow to reload Gemma, or switch the loader's "
+                "memory_profile to 'standard' to keep it cached."
             )
 
         # Encode positive prompt
@@ -74,24 +75,24 @@ class LTXVMLXTextEncode:
             neg_video_embeds, neg_audio_embeds = feature_extractor(neg_hidden, attention_mask=neg_mask)
 
         # Force evaluation of the lazy computation graph so embeddings are
-        # materialized BEFORE we release Gemma (otherwise lazy ops would
-        # follow weight references that are about to be freed).
+        # materialized BEFORE we (potentially) release Gemma — otherwise lazy
+        # ops would follow weight references that are about to be freed.
         arrays_to_eval = [video_embeds, audio_embeds]
         if neg_video_embeds is not None:
             arrays_to_eval.extend([neg_video_embeds, neg_audio_embeds])
         _evaluate_arrays(*arrays_to_eval)
 
-        # Free the text encoder now that embeddings are computed. Mirrors
-        # ltx-2-mlx's pipeline low_memory mode: Gemma (~6GB at q4) is no longer
-        # needed for the rest of the workflow, and freeing it before the DiT
-        # loads is the difference between OOM and successful generation on
-        # 32GB Macs (especially with the HQ res_2s sampler).
-        from ltx_core_mlx.utils.memory import aggressive_cleanup
+        # Free the encoder ONLY in low_vram mode. In standard mode, leave it
+        # intact so subsequent Queue runs reuse the cached loader output and
+        # skip the ~10s Gemma reload.
+        memory_profile = text_encoder.get("_memory_profile", "standard")
+        if memory_profile == "low_vram":
+            from ltx_core_mlx.utils.memory import aggressive_cleanup
 
-        text_encoder["gemma"] = None
-        text_encoder["feature_extractor"] = None
-        del gemma, feature_extractor
-        aggressive_cleanup()
+            text_encoder["gemma"] = None
+            text_encoder["feature_extractor"] = None
+            del gemma, feature_extractor
+            aggressive_cleanup()
 
         conditioning = {
             "video_embeds": video_embeds,
