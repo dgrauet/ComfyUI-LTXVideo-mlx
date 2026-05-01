@@ -38,8 +38,9 @@
         "Node name for S&R": "LTXVMLXCheckpointLoader"
       },
       "widgets_values": [
-        "dgrauet/ltx-2.3-mlx-q8",
-        false
+        "dgrauet/ltx-2.3-mlx",
+        false,
+        "standard"
       ]
     },
     {
@@ -70,9 +71,10 @@
         "Node name for S&R": "LTXVMLXTextEncoderLoader"
       },
       "widgets_values": [
-        "dgrauet/ltx-2.3-mlx-q8",
+        "dgrauet/ltx-2.3-mlx",
         "mlx-community/gemma-3-12b-it-4bit",
-        false
+        false,
+        "standard"
       ]
     },
     {
