@@ -12,6 +12,17 @@ except ImportError:
     HAS_MLX = False
 
 
+MEMORY_PROFILE_STANDARD = "standard"
+MEMORY_PROFILE_LOW_VRAM = "low_vram"
+MEMORY_PROFILE_CHOICES = [MEMORY_PROFILE_STANDARD, MEMORY_PROFILE_LOW_VRAM]
+MEMORY_PROFILE_TOOLTIP = (
+    "standard: keep models cached between Queue runs (matches ComfyUI "
+    "convention; recommended for 64GB+ Macs running bf16). "
+    "low_vram: free Gemma after encoding, force loader re-execution every "
+    "Queue. Required on 16GB Macs and recommended for 32GB Macs running "
+    "the dev/HQ samplers in q8."
+)
+
 # Module-level cache for loaded models
 _model_cache: dict[str, object] = {}
 
@@ -166,12 +177,16 @@ class LTXVMLXCheckpointLoader:
         return {
             "required": {
                 "model_dir": ("STRING", {
-                    "default": "dgrauet/ltx-2.3-mlx-q8",
+                    "default": "dgrauet/ltx-2.3-mlx",
                     "tooltip": "Path to MLX model weights directory or HuggingFace repo ID",
                 }),
             },
             "optional": {
                 "force_reload": ("BOOLEAN", {"default": False}),
+                "memory_profile": (MEMORY_PROFILE_CHOICES, {
+                    "default": MEMORY_PROFILE_STANDARD,
+                    "tooltip": MEMORY_PROFILE_TOOLTIP,
+                }),
             },
         }
 
@@ -180,7 +195,18 @@ class LTXVMLXCheckpointLoader:
     FUNCTION = "load_checkpoint"
     CATEGORY = "Lightricks/MLX"
 
-    def load_checkpoint(self, model_dir: str, force_reload: bool = False):
+    @classmethod
+    def IS_CHANGED(cls, model_dir="", force_reload=False, memory_profile=MEMORY_PROFILE_STANDARD):
+        # In low_vram mode the downstream sampler may release the cached
+        # LazyMLXModel/LazyMLXVAE handles to free Metal memory; force the
+        # loader to re-execute on every Queue so a fresh handle is produced.
+        # In standard mode let ComfyUI's framework cache hold the handles
+        # across runs (one Gemma+VAE warm path is the dominant per-Queue cost).
+        if memory_profile == MEMORY_PROFILE_LOW_VRAM:
+            return float("nan")
+        return f"{model_dir}|{force_reload}|{memory_profile}"
+
+    def load_checkpoint(self, model_dir: str, force_reload: bool = False, memory_profile: str = MEMORY_PROFILE_STANDARD):
         """Return a lazy model handle. Actual loading happens on first access.
 
         This is critical for memory management on Apple Silicon: the text encoder
@@ -191,6 +217,10 @@ class LTXVMLXCheckpointLoader:
 
         model = LazyMLXModel(resolved)
         vae = LazyMLXVAE(resolved)
+        # Stash the profile on both lazy handles so downstream samplers can
+        # query it cheaply if they need to know.
+        model._memory_profile = memory_profile
+        vae._memory_profile = memory_profile
         return (model, vae)
 
 
@@ -202,7 +232,7 @@ class LTXVMLXTextEncoderLoader:
         return {
             "required": {
                 "model_dir": ("STRING", {
-                    "default": "dgrauet/ltx-2.3-mlx-q8",
+                    "default": "dgrauet/ltx-2.3-mlx",
                     "tooltip": "Path to MLX model weights directory (for connector weights)",
                 }),
                 "gemma_model_id": ("STRING", {
@@ -212,6 +242,10 @@ class LTXVMLXTextEncoderLoader:
             },
             "optional": {
                 "force_reload": ("BOOLEAN", {"default": False}),
+                "memory_profile": (MEMORY_PROFILE_CHOICES, {
+                    "default": MEMORY_PROFILE_STANDARD,
+                    "tooltip": MEMORY_PROFILE_TOOLTIP,
+                }),
             },
         }
 
@@ -221,16 +255,23 @@ class LTXVMLXTextEncoderLoader:
     CATEGORY = "Lightricks/MLX"
 
     @classmethod
-    def IS_CHANGED(cls, *args, **kwargs):
-        # The downstream LTXVMLXTextEncode node frees the encoder dict's inner
-        # references after producing embeddings (low-VRAM behavior, mirrors the
-        # ltx-2-mlx pipeline's low_memory mode). That mutation invalidates any
-        # framework-level cached output, so we always force re-execution. Cost:
-        # one Gemma re-load (~10s on a fast SSD) per Queue. Benefit: ~6GB freed
-        # before the DiT loads, avoiding OOM on 32GB Macs running HQ.
-        return float("nan")
+    def IS_CHANGED(cls, model_dir="", gemma_model_id="", force_reload=False, memory_profile=MEMORY_PROFILE_STANDARD):
+        # In low_vram mode, the LTXVMLXTextEncode node frees the encoder dict
+        # after producing embeddings (mirrors ltx-2-mlx pipeline low_memory).
+        # That mutation invalidates ComfyUI's cached output, so we must force
+        # re-execution every Queue. In standard mode the encoder is preserved
+        # and the cached output is reusable.
+        if memory_profile == MEMORY_PROFILE_LOW_VRAM:
+            return float("nan")
+        return f"{model_dir}|{gemma_model_id}|{force_reload}|{memory_profile}"
 
-    def load_encoder(self, model_dir: str, gemma_model_id: str = "mlx-community/gemma-3-12b-it-4bit", force_reload: bool = False):
+    def load_encoder(
+        self,
+        model_dir: str,
+        gemma_model_id: str = "mlx-community/gemma-3-12b-it-4bit",
+        force_reload: bool = False,
+        memory_profile: str = MEMORY_PROFILE_STANDARD,
+    ):
         from ltx_core_mlx.text_encoders.gemma.encoders.base_encoder import GemmaLanguageModel
         from ltx_core_mlx.text_encoders.gemma.feature_extractor import GemmaFeaturesExtractorV2
         from ltx_core_mlx.utils.memory import aggressive_cleanup
@@ -238,16 +279,16 @@ class LTXVMLXTextEncoderLoader:
 
         cache_key = f"text_encoder:{model_dir}:{gemma_model_id}"
         if not force_reload and cache_key in _model_cache:
-            return (_model_cache[cache_key],)
+            cached = _model_cache[cache_key]
+            cached["_memory_profile"] = memory_profile
+            return (cached,)
 
         resolved = _resolve_model_dir(model_dir)
 
-        # Load Gemma language model
         gemma = GemmaLanguageModel()
         gemma.load(gemma_model_id)
         aggressive_cleanup()
 
-        # Load feature extractor connector
         feature_extractor = GemmaFeaturesExtractorV2()
         connector_weights = load_split_safetensors(resolved / "connector.safetensors", prefix="connector.")
         feature_extractor.connector.load_weights(list(connector_weights.items()))
@@ -256,9 +297,6 @@ class LTXVMLXTextEncoderLoader:
         encoder = {
             "gemma": gemma,
             "feature_extractor": feature_extractor,
+            "_memory_profile": memory_profile,
         }
-
-        # NOTE: Text encoder is NOT cached - it's too large (~7GB) to coexist
-        # with the transformer (~10.5GB) in Metal memory. The sampler will
-        # free the conditioning embeddings' reference to the encoder after use.
         return (encoder,)
