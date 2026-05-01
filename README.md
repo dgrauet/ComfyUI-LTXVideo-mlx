@@ -47,6 +47,20 @@ Two two-stage samplers are available on Apple Silicon:
 The HQ variant uses a second-order sampler with stronger temporal consistency. TeaCache is opt-in (caches stage 1 transformer activations across timesteps) — enable it on the sampler node to activate. See `example_workflows/mlx/MLX_T2V_I2V_Two_Stage_HQ.json` for a ready-made HQ + TeaCache workflow.
 
 
+## Memory Profiles
+
+Every MLX workflow ships in two variants. Pick by hardware:
+
+| Variant | RAM target | Default model | `memory_profile` |
+|---------|-----------|---------------|------------------|
+| `MLX_*.json` (no suffix) | 64GB+ | bf16 (`dgrauet/ltx-2.3-mlx`) | `standard` — keeps Gemma cached between Queue runs (matches ComfyUI convention) |
+| `MLX_*_LowVRAM.json` | 16GB | q4 (`dgrauet/ltx-2.3-mlx-q4`) | `low_vram` — frees Gemma after encoding, forces loader re-execution every Queue (~10s reload cost, but ~6GB of headroom returned) |
+
+The `memory_profile` widget on `LTXVMLXCheckpointLoader` and `LTXVMLXTextEncoderLoader` controls the unload behavior — both should always agree per workflow.
+
+**32GB Mac users:** the unsuffixed Standard variants will likely OOM in bf16. Open the LowVRAM variant for your pipeline, edit the loaders' `model_dir` from `dgrauet/ltx-2.3-mlx-q4` to `dgrauet/ltx-2.3-mlx-q8`, keep `memory_profile=low_vram`. This is the same memory pattern that worked before this release; only the q4 default is too aggressive for 32GB hardware that can run q8 comfortably.
+
+
 ## Quick Start 🚀
 
 We recommend using the LTX-2 workflows available in Comfy Manager.
