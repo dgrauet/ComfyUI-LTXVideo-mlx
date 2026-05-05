@@ -113,7 +113,8 @@
       },
       "widgets_values": [
         "A cinematic shot continuing the scene, smooth camera movement, high quality",
-        "blurry, out of focus, low quality"
+        "blurry, out of focus, low quality",
+        256
       ]
     },
     {

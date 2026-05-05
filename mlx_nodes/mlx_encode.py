@@ -44,6 +44,20 @@ class LTXVMLXTextEncode:
                     "default": DEFAULT_NEGATIVE_PROMPT,
                     "multiline": True,
                 }),
+                "max_length": ("INT", {
+                    "default": 1024,
+                    "min": 64,
+                    "max": 1024,
+                    "step": 64,
+                    "tooltip": (
+                        "Token sequence length passed to Gemma. The prompt is "
+                        "left-padded to this length. Lower values reduce GPU "
+                        "command-buffer time per layer; on 32GB Apple Silicon "
+                        "(e.g. M2 Pro), values above ~512 can trip the macOS "
+                        "GPU watchdog (Impacting Interactivity) for the 12B "
+                        "encoder. 256 is a safe default for short prompts."
+                    ),
+                }),
             },
         }
 
@@ -52,7 +66,7 @@ class LTXVMLXTextEncode:
     FUNCTION = "encode"
     CATEGORY = "Lightricks/MLX"
 
-    def encode(self, text_encoder: dict, prompt: str, negative_prompt: str = ""):
+    def encode(self, text_encoder: dict, prompt: str, negative_prompt: str = "", max_length: int = 1024):
         gemma = text_encoder.get("gemma")
         feature_extractor = text_encoder.get("feature_extractor")
         if gemma is None or feature_extractor is None:
@@ -64,14 +78,14 @@ class LTXVMLXTextEncode:
             )
 
         # Encode positive prompt
-        all_hidden_states, attention_mask = gemma.encode_all_layers(prompt)
+        all_hidden_states, attention_mask = gemma.encode_all_layers(prompt, max_length=max_length)
         video_embeds, audio_embeds = feature_extractor(all_hidden_states, attention_mask=attention_mask)
 
         # Encode negative prompt
         neg_video_embeds = None
         neg_audio_embeds = None
         if negative_prompt:
-            neg_hidden, neg_mask = gemma.encode_all_layers(negative_prompt)
+            neg_hidden, neg_mask = gemma.encode_all_layers(negative_prompt, max_length=max_length)
             neg_video_embeds, neg_audio_embeds = feature_extractor(neg_hidden, attention_mask=neg_mask)
 
         # Force evaluation of the lazy computation graph so embeddings are
