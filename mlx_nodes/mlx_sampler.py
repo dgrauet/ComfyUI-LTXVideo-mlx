@@ -214,7 +214,7 @@ def _run_two_stage_pipeline(
     distilled_lora: str,
     distilled_lora_strength: float,
     enable_teacache: bool,
-    teacache_thresh: float,
+    teacache_thresh: float | None,
 ):
     """Shared body for two-stage MLX sampling.
 
@@ -349,12 +349,19 @@ def _run_two_stage_pipeline(
         from mlx_arsenal.diffusion import TeaCacheController
 
         if hq:
-            from ltx_pipelines_mlx.ti2vid_two_stages_hq import LTX2_HQ_TEACACHE_COEFFICIENTS as _COEFFS
+            from ltx_pipelines_mlx.ti2vid_two_stages_hq import (
+                LTX2_HQ_TEACACHE_COEFFICIENTS as _COEFFS,
+                LTX2_HQ_TEACACHE_THRESH as _DEFAULT_THRESH,
+            )
         else:
-            from ltx_pipelines_mlx.ti2vid_two_stages import LTX2_TEACACHE_COEFFICIENTS as _COEFFS
+            from ltx_pipelines_mlx.ti2vid_two_stages import (
+                LTX2_TEACACHE_COEFFICIENTS as _COEFFS,
+                LTX2_TEACACHE_THRESH as _DEFAULT_THRESH,
+            )
+        # teacache_thresh=None means "track upstream's calibrated default".
         teacache_controller = TeaCacheController(
             num_steps=stage1_steps,
-            rel_l1_thresh=teacache_thresh,
+            rel_l1_thresh=_DEFAULT_THRESH if teacache_thresh is None else teacache_thresh,
             coefficients=_COEFFS,
         )
         teacache_controller.reset()
@@ -513,6 +520,9 @@ class LTXVMLXTwoStageSampler:
 
     @classmethod
     def INPUT_TYPES(cls):
+        # Default threshold tracks upstream's calibrated value, not a hardcoded copy.
+        from ltx_pipelines_mlx.ti2vid_two_stages import LTX2_TEACACHE_THRESH
+
         return {
             "required": {
                 "model": ("LTXV_MLX_MODEL",),
@@ -532,7 +542,7 @@ class LTXVMLXTwoStageSampler:
                 "distilled_lora": ("STRING", {"default": "ltx-2.3-22b-distilled-lora-384-1.1.safetensors"}),
                 "distilled_lora_strength": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.05}),
                 "enable_teacache": ("BOOLEAN", {"default": False}),
-                "teacache_thresh": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 2.0, "step": 0.05}),
+                "teacache_thresh": ("FLOAT", {"default": LTX2_TEACACHE_THRESH, "min": 0.0, "max": 2.0, "step": 0.05}),
             },
         }
 
@@ -558,7 +568,7 @@ class LTXVMLXTwoStageSampler:
         distilled_lora: str = "ltx-2.3-22b-distilled-lora-384-1.1.safetensors",
         distilled_lora_strength: float = 1.0,
         enable_teacache: bool = False,
-        teacache_thresh: float = 0.5,
+        teacache_thresh: float | None = None,
     ):
         return _run_two_stage_pipeline(
             hq=False,
@@ -586,6 +596,9 @@ class LTXVMLXTwoStageHQSampler:
 
     @classmethod
     def INPUT_TYPES(cls):
+        # Default threshold tracks upstream's calibrated value, not a hardcoded copy.
+        from ltx_pipelines_mlx.ti2vid_two_stages_hq import LTX2_HQ_TEACACHE_THRESH
+
         return {
             "required": {
                 "model": ("LTXV_MLX_MODEL",),
@@ -605,7 +618,7 @@ class LTXVMLXTwoStageHQSampler:
                 "distilled_lora": ("STRING", {"default": "ltx-2.3-22b-distilled-lora-384-1.1.safetensors"}),
                 "distilled_lora_strength": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.05}),
                 "enable_teacache": ("BOOLEAN", {"default": False}),
-                "teacache_thresh": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.05}),
+                "teacache_thresh": ("FLOAT", {"default": LTX2_HQ_TEACACHE_THRESH, "min": 0.0, "max": 2.0, "step": 0.05}),
             },
         }
 
@@ -631,7 +644,7 @@ class LTXVMLXTwoStageHQSampler:
         distilled_lora: str = "ltx-2.3-22b-distilled-lora-384-1.1.safetensors",
         distilled_lora_strength: float = 1.0,
         enable_teacache: bool = False,
-        teacache_thresh: float = 1.0,
+        teacache_thresh: float | None = None,
     ):
         return _run_two_stage_pipeline(
             hq=True,
