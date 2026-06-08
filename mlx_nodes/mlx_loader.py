@@ -69,11 +69,16 @@ class LazyMLXModel:
         """Load the transformer into Metal memory."""
         if self.transformer is not None:
             return
-        from ltx_core_mlx.model.transformer.model import LTXModel
+        from ltx_core_mlx.model.transformer.model import LTXModel, LTXModelConfig
         from ltx_core_mlx.utils.memory import aggressive_cleanup
         from ltx_core_mlx.utils.weights import apply_quantization, load_split_safetensors
 
-        self.transformer = LTXModel()
+        # Read av_ca_timestep_scale_multiplier (and other hyperparams) from the
+        # checkpoint config — the dataclass default is 1, but checkpoints ship
+        # 1000; a bare LTXModel() mis-weights audio cross-modal gating. See
+        # ltx-2-mlx#37/#39.
+        config = LTXModelConfig.from_checkpoint_dir(self.model_dir)
+        self.transformer = LTXModel(config)
         for candidate in (
             "transformer.safetensors",
             "transformer-distilled-1.1.safetensors",

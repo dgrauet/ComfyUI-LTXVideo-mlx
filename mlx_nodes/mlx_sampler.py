@@ -245,7 +245,7 @@ def _run_two_stage_pipeline(
     from ltx_core_mlx.loader.fuse_loras import apply_loras
     from ltx_core_mlx.loader.primitives import LoraStateDictWithStrength, StateDict
     from ltx_core_mlx.loader.sd_ops import LTXV_LORA_COMFY_RENAMING_MAP
-    from ltx_core_mlx.model.transformer.model import LTXModel, X0Model
+    from ltx_core_mlx.model.transformer.model import LTXModel, LTXModelConfig, X0Model
     from ltx_core_mlx.model.upsampler import LatentUpsampler
     from ltx_core_mlx.utils.image import prepare_image_for_encoding
     from ltx_core_mlx.utils.memory import aggressive_cleanup
@@ -273,8 +273,12 @@ def _run_two_stage_pipeline(
     vae.load_encoder()
 
     # --- Load dev transformer ---
+    # Config from checkpoint so av_ca_timestep_scale_multiplier=1000 (not the
+    # dataclass default 1) — mis-weights audio cross-modal gating otherwise.
+    # See ltx-2-mlx#37/#39.
     dev_path = model_dir / dev_transformer
-    dit = LTXModel()
+    config = LTXModelConfig.from_checkpoint_dir(model_dir)
+    dit = LTXModel(config)
     weights = load_split_safetensors(dev_path, prefix="transformer.")
     apply_quantization(dit, weights)
     dit.load_weights(list(weights.items()))
