@@ -10,8 +10,7 @@ from comfy.ldm.lightricks.model import (
     LTXFrequenciesPrecision,
     LTXRopeType,
     generate_freq_grid_np,
-    interleaved_freqs_cis,
-    split_freqs_cis,
+    freqs_cis_matrix,
 )
 from torch import nn
 
@@ -251,12 +250,11 @@ class Embeddings1DConnector(nn.Module):
             expected_freqs = dim // 2
             current_freqs = freqs.shape[-1]
             pad_size = expected_freqs - current_freqs
-            cos_freq, sin_freq = split_freqs_cis(
-                freqs, pad_size, self.num_attention_heads
-            )
         else:
-            cos_freq, sin_freq = interleaved_freqs_cis(freqs, dim % n_elem)
-        return cos_freq.to(self.dtype), sin_freq.to(self.dtype), self.split_rope
+            pad_size = dim % n_elem
+        return freqs_cis_matrix(
+            freqs, pad_size, self.split_rope, self.num_attention_heads, self.dtype
+        )
 
     def forward(
         self,
